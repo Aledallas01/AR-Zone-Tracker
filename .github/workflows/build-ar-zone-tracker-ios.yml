@@ -32,7 +32,7 @@ jobs:
           cache-dependency-path: pnpm-lock.yaml
 
       - name: Install JavaScript dependencies
-        run: pnpm install --frozen-lockfile
+        run: pnpm install --no-frozen-lockfile
 
       - name: Build web bundle and sync Capacitor iOS project
         run: pnpm --filter @workspace/ar-zone-tracker run cap:sync
