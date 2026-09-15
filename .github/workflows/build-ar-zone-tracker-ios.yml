@@ -1,0 +1,72 @@
+name: Build AR Zone Tracker iOS IPA
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  PORT: "25813"
+  BASE_PATH: "/"
+
+jobs:
+  build-ios:
+    name: Build unsigned iOS IPA
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.15.1
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+
+      - name: Install JavaScript dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build web bundle and sync Capacitor iOS project
+        run: pnpm --filter @workspace/ar-zone-tracker run cap:sync
+
+      - name: Compile unsigned iOS app
+        working-directory: artifacts/ar-zone-tracker/ios/App
+        run: |
+          xcodebuild \
+            -project App.xcodeproj \
+            -scheme App \
+            -destination 'generic/platform=iOS' \
+            -sdk iphoneos \
+            -configuration Release \
+            -derivedDataPath ../DerivedData \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            build
+
+      - name: Package unsigned IPA
+        run: |
+          rm -rf ipa-staging ARZoneTracker-unsigned.ipa
+          mkdir -p ipa-staging/Payload
+          cp -R artifacts/ar-zone-tracker/ios/DerivedData/Build/Products/Release-iphoneos/App.app ipa-staging/Payload/
+          (
+            cd ipa-staging
+            zip -qry ../ARZoneTracker-unsigned.ipa Payload
+          )
+          shasum -a 256 ARZoneTracker-unsigned.ipa > ARZoneTracker-unsigned.ipa.sha256
+
+      - name: Upload IPA artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ar-zone-tracker-ios
+          path: |
+            ARZoneTracker-unsigned.ipa
+            ARZoneTracker-unsigned.ipa.sha256
+          if-no-files-found: error
