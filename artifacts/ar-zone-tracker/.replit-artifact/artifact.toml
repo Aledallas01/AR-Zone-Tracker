@@ -1,0 +1,28 @@
+kind = "web"
+previewPath = "/"
+title = "AR Zone Tracker"
+description = "Un'app iPhone con Capacitor e ARKit per posizionare nello spazio una zona virtuale di 20×10×5 metri e rilevare quando il telefono si trova parzialmente o completamente al suo interno."
+version = "1.0.0"
+id = "artifacts/ar-zone-tracker"
+router = "path"
+
+[[services]]
+name = "web"
+paths = [ "/" ]
+localPort = 25813
+
+[services.development]
+run = "pnpm --filter @workspace/ar-zone-tracker run dev"
+
+[services.production]
+build = [ "pnpm", "--filter", "@workspace/ar-zone-tracker", "run", "build" ]
+serve = "static"
+publicDir = "artifacts/ar-zone-tracker/dist/public"
+
+[[services.production.rewrites]]
+from = "/*"
+to = "/index.html"
+
+[services.env]
+PORT = "25813"
+BASE_PATH = "/"

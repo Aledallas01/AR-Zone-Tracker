@@ -1,6 +1,6 @@
-# [Project name]
+# AR Zone Tracker
 
-_Replace the heading above with the project's name, and this line with one sentence describing what this app does for users._
+App Capacitor per iPhone che posiziona e monitora una zona AR di 20 × 10 × 5 metri.
 
 ## Run & Operate
 
@@ -22,15 +22,21 @@ _Replace the heading above with the project's name, and this line with one sente
 
 ## Where things live
 
-_Populate as you build — short repo map plus pointers to the source-of-truth file for DB schema, API contracts, theme files, etc._
+- `artifacts/ar-zone-tracker/src/App.tsx` — preview UI, setup flow and simulator.
+- `artifacts/ar-zone-tracker/src/native/arZone.ts` — bridge TypeScript verso ARKit.
+- `artifacts/ar-zone-tracker/ios/App/App/ARZoneNative.swift` — plugin nativo per tracking, LiDAR e rilevamento della zona.
+- `artifacts/ar-zone-tracker/capacitor.config.ts` — configurazione Capacitor e identificativo iOS.
 
 ## Architecture decisions
 
-_Populate as you build — non-obvious choices a reader couldn't infer from the code (3-5 bullets)._
+- L'app usa Capacitor + ARKit, con un plugin Swift locale, perché il rilevamento spaziale affidabile richiede API native iOS.
+- La UI browser include un simulatore esplicito per verificare fuori/parzialmente/completamente dentro senza hardware.
+- La percentuale indica il volume di sovrapposizione tra il piccolo volume del telefono e la zona, non una distanza arbitraria.
+- LiDAR/scene depth è opzionale: ARKit world tracking continua a funzionare sui dispositivi senza LiDAR.
 
 ## Product
 
-_Describe the high-level user-facing capabilities of this app once they exist._
+L'utente scansiona l'ambiente, posiziona una zona virtuale, poi vede stato, percentuale di ingresso, coordinate locali e qualità del tracking mentre si muove.
 
 ## User preferences
 
@@ -38,7 +44,8 @@ _Populate as you build — explicit user instructions worth remembering across s
 
 ## Gotchas
 
-_Populate as you build — sharp edges, "always run X before Y" rules._
+- Il progetto iOS va aperto e firmato con Xcode su Mac per il sideload; l'ambiente di sviluppo web non può eseguire Xcode.
+- Dopo modifiche alla UI eseguire `pnpm --filter @workspace/ar-zone-tracker run cap:sync` prima di aprire Xcode.
 
 ## Pointers
 

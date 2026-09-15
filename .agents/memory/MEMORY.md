@@ -1,0 +1,1 @@
+- [Capacitor native AR](capacitor-native-ar.md) — Capacitor 8 local Swift plugins must declare their bridge contract and be registered on the bridge before JavaScript can call them.
