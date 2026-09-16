@@ -243,7 +243,7 @@ public class ARZoneNative: CAPPlugin, CAPBridgedPlugin, ARSessionDelegate, ARSCN
         guard let sceneView = arView, let zone = zoneNode else { return }
         let point = gesture.location(in: sceneView)
         let hits = sceneView.hitTest(point, options: [
-            SCNHitTestOption.searchMode.rawValue: SCNHitTestSearchMode.all.rawValue,
+            SCNHitTestOption.searchMode: SCNHitTestSearchMode.all.rawValue,
         ])
         let touchedZone = hits.contains { hit in
             var node: SCNNode? = hit.node
