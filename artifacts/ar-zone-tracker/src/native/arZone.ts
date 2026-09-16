@@ -26,6 +26,8 @@ export type ZoneError = {
 
 export type ARZoneNativePlugin = {
   isSupported(): Promise<{ supported: boolean; lidarAvailable: boolean }>;
+  /** Dimensioni in METRI: è l'unità di ARKit. La UI lavora in centimetri
+   *  e converte qui al confine (vedi ZONE_CM in App.tsx). */
   startSession(options: {
     width: number;
     depth: number;

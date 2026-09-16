@@ -34,6 +34,14 @@ import {
   Router as WouterRouter,
 } from 'wouter';
 
+/** Misure della zona in centimetri: unica fonte di verità per UI e plugin.
+ *  ARKit ragiona in metri, quindi la conversione avviene solo al confine nativo. */
+const ZONE_CM = { width: 2000, depth: 1000, height: 500 } as const;
+const CM_PER_M = 100;
+const ZONE_LABEL = `${ZONE_CM.width} × ${ZONE_CM.depth} × ${ZONE_CM.height}`;
+const toCm = (meters: number) => `${(meters * CM_PER_M).toFixed(0)} cm`;
+
+
 const queryClient = new QueryClient();
 
 type Phase = 'ready' | 'scanning' | 'active';
@@ -93,7 +101,11 @@ function Home() {
   const startSession = async () => {
     setNativeError(null);
     try {
-      await arZone.startSession({ width: 20, depth: 10, height: 5 });
+      await arZone.startSession({
+        width: ZONE_CM.width / CM_PER_M,
+        depth: ZONE_CM.depth / CM_PER_M,
+        height: ZONE_CM.height / CM_PER_M,
+      });
       setTrackingStatus(null);
       setNativeStatus(null);
       setPhase('scanning');
@@ -155,9 +167,9 @@ function Home() {
       ...stateMeta[nativeStatus.state],
       percent: `${Math.round(nativeStatus.percent)}%`,
       position: {
-        x: `${nativeStatus.position.x.toFixed(2)} m`,
-        y: `${nativeStatus.position.y.toFixed(2)} m`,
-        z: `${nativeStatus.position.z.toFixed(2)} m`,
+        x: toCm(nativeStatus.position.x),
+        y: toCm(nativeStatus.position.y),
+        z: toCm(nativeStatus.position.z),
       },
     };
   }, [nativeStatus]);
@@ -180,7 +192,7 @@ function Home() {
         <div className="sidebar-rule" />
         <div className="sidebar-stack">
           <div className="sidebar-status"><span className="status-dot" /><span>Local session</span></div>
-          <div className="sidebar-readout"><span>ZONE PROFILE</span><strong>20 × 10 × 5 M</strong></div>
+          <div className="sidebar-readout"><span>ZONE PROFILE</span><strong>{ZONE_LABEL} CM</strong></div>
           <div className="sidebar-readout"><span>TRACKING SOURCE</span><strong>ARKit camera</strong></div>
         </div>
         <div className="sidebar-footer">
@@ -315,7 +327,7 @@ function SetupView({ phase, trackingStatus, nativeError, onStart, onPlace }: Set
         </div>
         <div className="live-surface-readout">
           <span>ZONE DIMENSIONS</span>
-          <strong>20.00 × 10.00 × 5.00 <small>M</small></strong>
+          <strong>{ZONE_LABEL} <small>CM</small></strong>
         </div>
       </div>
     </section>
@@ -358,7 +370,7 @@ function ActiveView({ current, trackingStatus, nativeStatus, onReset }: ActiveVi
             <Camera size={26} />
             <strong>Volume anchor active</strong>
             <span>Move through the real zone. The status is calculated from the ARKit camera pose.</span>
-            <div className="live-monitor-dimensions">20.00 × 10.00 × 5.00 M</div>
+            <div className="live-monitor-dimensions">{ZONE_LABEL} CM</div>
           </div>
         </div>
 
@@ -393,7 +405,7 @@ function ActiveView({ current, trackingStatus, nativeStatus, onReset }: ActiveVi
       </div>
 
       <div className="measurement-strip">
-        <div className="measure-item"><div className="measure-icon"><Ruler size={16} /></div><div><span>ZONE DIMENSIONS</span><strong>20.00 × 10.00 × 5.00 <small>M</small></strong></div></div>
+        <div className="measure-item"><div className="measure-icon"><Ruler size={16} /></div><div><span>ZONE DIMENSIONS</span><strong>{ZONE_LABEL} <small>CM</small></strong></div></div>
         <div className="measure-item"><div className="measure-icon"><Waves size={16} /></div><div><span>DEPTH SENSOR</span><strong>{trackingStatus?.lidarAvailable ? 'LiDAR' : 'ARKit'} <small>ACTIVE</small></strong></div></div>
         <div className="measure-item"><div className="measure-icon"><Zap size={16} /></div><div><span>POSITION SOURCE</span><strong>ARFrame <small>LIVE</small></strong></div></div>
         <div className="measure-note"><CircleAlert size={16} /><span>Only native ARKit data<br /><b>{nativeStatus ? 'Position received' : 'Waiting for position'}</b></span></div>
