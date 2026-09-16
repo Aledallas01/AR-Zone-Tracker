@@ -788,3 +788,15 @@ body,
   color: #0d2338;
   text-align: center;
 }
+
+.zone-scan {
+  margin: 0;
+  padding: 7px 16px;
+  border-radius: 999px;
+  background: rgba(8, 20, 34, .6);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  color: rgba(214, 236, 255, .9);
+  font-size: 12px;
+  letter-spacing: .03em;
+}

@@ -20,10 +20,13 @@ public class ARZoneNative: CAPPlugin, CAPBridgedPlugin, ARSessionDelegate, ARSCN
     // Azzurro scuro per il volume, spigoli piu scuri e spessi.
     private let zoneFillColor = UIColor(red: 0.09, green: 0.33, blue: 0.58, alpha: 1)
     private let zoneEdgeColor = UIColor(red: 0.02, green: 0.12, blue: 0.27, alpha: 1)
+    private let scanMeshColor = UIColor(red: 0.42, green: 0.78, blue: 1, alpha: 1)
 
     private let arSession = ARSession()
     private var arView: ARSCNView?
     private var zoneAnchor: ARAnchor?
+    private var zonePlaneAnchorID: UUID?
+    private var zoneRelativeTransform = matrix_identity_float4x4
     private var zoneNode: SCNNode?
     private var zoneTransform = matrix_identity_float4x4
     private var zoneIsPlaced = false
@@ -35,6 +38,11 @@ public class ARZoneNative: CAPPlugin, CAPBridgedPlugin, ARSessionDelegate, ARSCN
     private var hapticEngine: CHHapticEngine?
     private var hapticPlayer: CHHapticPatternPlayer?
 
+    /// Nodi della mesh LiDAR, uno per ARMeshAnchor. Mostrati solo finche la zona
+    /// non e posizionata: servono a far vedere che la scansione sta avvenendo.
+    private var meshNodes: [UUID: SCNNode] = [:]
+    private var showsScanMesh = true
+
     override public func load() {
         super.load()
         arSession.delegate = self
@@ -43,7 +51,7 @@ public class ARZoneNative: CAPPlugin, CAPBridgedPlugin, ARSessionDelegate, ARSCN
 
     @objc func isSupported(_ call: CAPPluginCall) {
         let supported = ARWorldTrackingConfiguration.isSupported
-        let lidarAvailable = ARWorldTrackingConfiguration.supportsFrameSemantics(.sceneDepth)
+        let lidarAvailable = ARWorldTrackingConfiguration.supportsSceneReconstruction(.mesh)
         call.resolve([
             "supported": supported,
             "lidarAvailable": lidarAvailable,
@@ -61,18 +69,25 @@ public class ARZoneNative: CAPPlugin, CAPBridgedPlugin, ARSessionDelegate, ARSCN
         zoneDepth = max(0.01, Float(call.getDouble("depth") ?? 0.1))
         zoneHeight = max(0.01, Float(call.getDouble("height") ?? 0.05))
         clearZone()
+        showsScanMesh = true
 
         let configuration = ARWorldTrackingConfiguration()
-        configuration.planeDetection = [.horizontal]
+        // Anche i piani verticali: piu ancore stabili in scena significa meno
+        // deriva, non servono solo a poggiarci sopra la zona.
+        configuration.planeDetection = [.horizontal, .vertical]
         configuration.isAutoFocusEnabled = true
-        let lidarAvailable = ARWorldTrackingConfiguration.supportsFrameSemantics(.sceneDepth)
+
+        let lidarAvailable = ARWorldTrackingConfiguration.supportsSceneReconstruction(.mesh)
         if lidarAvailable {
-            configuration.frameSemantics.insert(.sceneDepth)
-        }
-        // La ricostruzione a mesh non serve al rendering, ma da ad ARKit molti
-        // piu riferimenti geometrici e riduce la deriva del tracking.
-        if ARWorldTrackingConfiguration.supportsSceneReconstruction(.mesh) {
+            // La scansione vera e propria: ARKit ricostruisce una mesh
+            // dell'ambiente e la usa come riferimento geometrico per il
+            // tracking, invece dei soli punti caratteristici della camera.
             configuration.sceneReconstruction = .mesh
+        }
+        if ARWorldTrackingConfiguration.supportsFrameSemantics(.smoothedSceneDepth) {
+            configuration.frameSemantics.insert(.smoothedSceneDepth)
+        } else if ARWorldTrackingConfiguration.supportsFrameSemantics(.sceneDepth) {
+            configuration.frameSemantics.insert(.sceneDepth)
         }
 
         DispatchQueue.main.async { [weak self] in
@@ -108,25 +123,23 @@ public class ARZoneNative: CAPPlugin, CAPBridgedPlugin, ARSessionDelegate, ARSCN
         }
 
         let screenCenter = CGPoint(x: sceneView.bounds.midX, y: sceneView.bounds.midY)
-        // Prima i piani gia rilevati: agganciarsi a una stima al volo e la causa
-        // principale di un ancoraggio che poi scivola quando la mappa si affina.
-        var floorTransform: simd_float4x4?
-        if let query = sceneView.raycastQuery(
-            from: screenCenter,
-            allowing: .existingPlaneGeometry,
-            alignment: .horizontal
-        ), let result = arSession.raycast(query).first {
-            floorTransform = result.worldTransform
-        } else if let query = sceneView.raycastQuery(
-            from: screenCenter,
-            allowing: .estimatedPlane,
-            alignment: .horizontal
-        ), let result = arSession.raycast(query).first {
-            floorTransform = result.worldTransform
+        // Ordine di preferenza: geometria della mesh LiDAR, poi piani gia
+        // rilevati, e solo come ultima risorsa una stima al volo. Le stime sono
+        // la causa principale di un ancoraggio che poi scivola.
+        var hit: ARRaycastResult?
+        for target in [ARRaycastQuery.Target.existingPlaneGeometry, .estimatedPlane] {
+            if hit != nil { break }
+            if let query = sceneView.raycastQuery(
+                from: screenCenter,
+                allowing: target,
+                alignment: .horizontal
+            ) {
+                hit = arSession.raycast(query).first
+            }
         }
 
-        guard let hit = floorTransform else {
-            call.reject("Nessuna superficie orizzontale rilevata. Punta la fotocamera verso il pavimento.")
+        guard let result = hit else {
+            call.reject("Nessuna superficie rilevata. Inquadra il pavimento e muovi lentamente il telefono.")
             return
         }
 
@@ -141,9 +154,9 @@ public class ARZoneNative: CAPPlugin, CAPBridgedPlugin, ARSessionDelegate, ARSCN
         let normalizedForward = forward / forwardLength
         let right = SIMD3<Float>(normalizedForward.z, 0, -normalizedForward.x)
         let floorPosition = SIMD3<Float>(
-            hit.columns.3.x,
-            hit.columns.3.y,
-            hit.columns.3.z
+            result.worldTransform.columns.3.x,
+            result.worldTransform.columns.3.y,
+            result.worldTransform.columns.3.z
         )
 
         var transform = matrix_identity_float4x4
@@ -155,20 +168,30 @@ public class ARZoneNative: CAPPlugin, CAPBridgedPlugin, ARSessionDelegate, ARSCN
         clearZone()
         zoneTransform = transform
         zoneIsPlaced = true
+        showsScanMesh = false
+        removeScanMesh()
 
-        // Il volume vive dentro un ARAnchor: quando ARKit ri-localizza e corregge
-        // l'origine del mondo sposta anche l'ancora, quindi il box resta fermo
-        // rispetto alla scena reale. Con una matrice fissa sulla rootNode restava
-        // invece fermo rispetto a un'origine che nel frattempo si era spostata.
-        let anchor = ARAnchor(name: "arZone", transform: transform)
-        zoneAnchor = anchor
-        arSession.add(anchor: anchor)
+        if let planeAnchor = result.anchor as? ARPlaneAnchor {
+            // Caso migliore: la zona diventa figlia del piano rilevato. ARKit
+            // raffina di continuo posizione ed estensione dei piani, e la zona
+            // segue quelle correzioni invece di restare indietro.
+            zonePlaneAnchorID = planeAnchor.identifier
+            zoneRelativeTransform = simd_mul(simd_inverse(planeAnchor.transform), transform)
+            attachZoneToPlane(planeAnchor)
+        } else {
+            // Nessun piano sotto il raycast: ancora libera, comunque corretta da
+            // ARKit a ogni ri-localizzazione.
+            let anchor = ARAnchor(name: "arZone", transform: transform)
+            zoneAnchor = anchor
+            arSession.add(anchor: anchor)
+        }
 
         call.resolve(["placed": true])
     }
 
     @objc func resetSession(_ call: CAPPluginCall) {
         clearZone()
+        showsScanMesh = true
         arSession.pause()
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
@@ -185,8 +208,12 @@ public class ARZoneNative: CAPPlugin, CAPBridgedPlugin, ARSessionDelegate, ARSCN
             arSession.remove(anchor: anchor)
         }
         zoneAnchor = nil
-        zoneNode?.removeFromParentNode()
-        zoneNode = nil
+        zonePlaneAnchorID = nil
+        zoneRelativeTransform = matrix_identity_float4x4
+        DispatchQueue.main.async { [weak self] in
+            self?.zoneNode?.removeFromParentNode()
+            self?.zoneNode = nil
+        }
         zoneIsPlaced = false
         horizontalPlaneDetected = false
         currentZoneState = ""
@@ -213,6 +240,64 @@ public class ARZoneNative: CAPPlugin, CAPBridgedPlugin, ARSessionDelegate, ARSCN
         arSession.delegate = self
         arView = sceneView
         return true
+    }
+
+    // MARK: - Mesh della scansione
+
+    /// Converte la geometria di un ARMeshAnchor in una SCNGeometry disegnabile.
+    private func scanGeometry(from meshAnchor: ARMeshAnchor) -> SCNGeometry {
+        let mesh = meshAnchor.geometry
+        let vertices = mesh.vertices
+        let faces = mesh.faces
+
+        let vertexSource = SCNGeometrySource(
+            buffer: vertices.buffer,
+            vertexFormat: vertices.format,
+            semantic: .vertex,
+            vertexCount: vertices.count,
+            dataOffset: vertices.offset,
+            dataStride: vertices.stride
+        )
+        let faceData = Data(
+            bytes: faces.buffer.contents(),
+            count: faces.buffer.length
+        )
+        let element = SCNGeometryElement(
+            data: faceData,
+            primitiveType: .triangles,
+            primitiveCount: faces.count,
+            bytesPerIndex: faces.bytesPerIndex
+        )
+
+        let geometry = SCNGeometry(sources: [vertexSource], elements: [element])
+        let material = SCNMaterial()
+        material.lightingModel = .constant
+        material.fillMode = .lines
+        material.isDoubleSided = true
+        material.writesToDepthBuffer = false
+        material.diffuse.contents = scanMeshColor.withAlphaComponent(0.55)
+        material.emission.contents = scanMeshColor.withAlphaComponent(0.35)
+        geometry.materials = [material]
+        return geometry
+    }
+
+    private func removeScanMesh() {
+        let nodes = meshNodes
+        meshNodes.removeAll()
+        DispatchQueue.main.async {
+            nodes.values.forEach { $0.removeFromParentNode() }
+        }
+    }
+
+    private func attachZoneToPlane(_ planeAnchor: ARPlaneAnchor) {
+        guard let sceneView = arView else { return }
+        DispatchQueue.main.async { [weak self] in
+            guard let self, let planeNode = sceneView.node(for: planeAnchor) else { return }
+            let zone = self.buildZoneNode()
+            zone.simdTransform = self.zoneRelativeTransform
+            planeNode.addChildNode(zone)
+            self.zoneNode = zone
+        }
     }
 
     // MARK: - Geometria del volume
@@ -362,10 +447,45 @@ public class ARZoneNative: CAPPlugin, CAPBridgedPlugin, ARSessionDelegate, ARSCN
     // MARK: - ARSCNViewDelegate
 
     public func renderer(_ renderer: SCNSceneRenderer, didAdd node: SCNNode, for anchor: ARAnchor) {
+        if let meshAnchor = anchor as? ARMeshAnchor {
+            guard showsScanMesh else { return }
+            let meshNode = SCNNode(geometry: scanGeometry(from: meshAnchor))
+            meshNode.renderingOrder = 1
+            node.addChildNode(meshNode)
+            meshNodes[meshAnchor.identifier] = meshNode
+            return
+        }
+
+        if let planeAnchor = anchor as? ARPlaneAnchor,
+           planeAnchor.identifier == zonePlaneAnchorID,
+           zoneNode == nil {
+            let zone = buildZoneNode()
+            zone.simdTransform = zoneRelativeTransform
+            node.addChildNode(zone)
+            zoneNode = zone
+            return
+        }
+
         guard anchor.identifier == zoneAnchor?.identifier else { return }
         let zone = buildZoneNode()
         node.addChildNode(zone)
         zoneNode = zone
+    }
+
+    public func renderer(_ renderer: SCNSceneRenderer, didUpdate node: SCNNode, for anchor: ARAnchor) {
+        guard let meshAnchor = anchor as? ARMeshAnchor else { return }
+        guard showsScanMesh else {
+            meshNodes[meshAnchor.identifier]?.removeFromParentNode()
+            meshNodes.removeValue(forKey: meshAnchor.identifier)
+            return
+        }
+        // ARKit affina la mesh in continuazione: si sostituisce la geometria del
+        // nodo esistente invece di ricrearlo, cosi non si accumulano nodi.
+        meshNodes[meshAnchor.identifier]?.geometry = scanGeometry(from: meshAnchor)
+    }
+
+    public func renderer(_ renderer: SCNSceneRenderer, didRemove node: SCNNode, for anchor: ARAnchor) {
+        meshNodes.removeValue(forKey: anchor.identifier)
     }
 
     // MARK: - ARSessionDelegate
@@ -377,7 +497,13 @@ public class ARZoneNative: CAPPlugin, CAPBridgedPlugin, ARSessionDelegate, ARSCN
     }
 
     public func session(_ session: ARSession, didUpdate anchors: [ARAnchor]) {
-        // Se ARKit corregge l'ancora, i calcoli devono usare la posizione nuova.
+        // Se la zona e figlia di un piano, la sua posizione nel mondo cambia
+        // ogni volta che ARKit raffina quel piano: i calcoli devono seguirla.
+        if let planeID = zonePlaneAnchorID,
+           let plane = anchors.first(where: { $0.identifier == planeID }) {
+            zoneTransform = simd_mul(plane.transform, zoneRelativeTransform)
+            return
+        }
         guard let identifier = zoneAnchor?.identifier,
               let updated = anchors.first(where: { $0.identifier == identifier }) else { return }
         zoneAnchor = updated
@@ -395,10 +521,26 @@ public class ARZoneNative: CAPPlugin, CAPBridgedPlugin, ARSessionDelegate, ARSCN
             trackingQuality = "notAvailable"
         }
 
+        let mappingStatus: String
+        switch frame.worldMappingStatus {
+        case .mapped:
+            mappingStatus = "mapped"
+        case .extending:
+            mappingStatus = "extending"
+        case .limited:
+            mappingStatus = "limited"
+        case .notAvailable:
+            mappingStatus = "notAvailable"
+        @unknown default:
+            mappingStatus = "notAvailable"
+        }
+
         let trackingPayload: [String: Any] = [
             "trackingQuality": trackingQuality,
-            "lidarAvailable": frame.sceneDepth != nil,
+            "lidarAvailable": frame.sceneDepth != nil || frame.smoothedSceneDepth != nil,
             "surfaceDetected": horizontalPlaneDetected,
+            "mappingStatus": mappingStatus,
+            "meshAnchors": frame.anchors.filter { $0 is ARMeshAnchor }.count,
         ]
         notifyListeners("trackingStatus", data: trackingPayload)
 
@@ -449,7 +591,7 @@ public class ARZoneNative: CAPPlugin, CAPBridgedPlugin, ARSessionDelegate, ARSCN
                 "z": position.z,
             ],
             "trackingQuality": trackingQuality,
-            "lidarAvailable": frame.sceneDepth != nil,
+            "lidarAvailable": frame.sceneDepth != nil || frame.smoothedSceneDepth != nil,
         ]
         notifyListeners("zoneStatus", data: payload)
     }

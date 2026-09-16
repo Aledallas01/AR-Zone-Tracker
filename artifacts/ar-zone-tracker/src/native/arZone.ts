@@ -14,10 +14,16 @@ export type ZoneStatus = {
   lidarAvailable: boolean;
 };
 
+export type MappingStatus = 'notAvailable' | 'limited' | 'extending' | 'mapped';
+
 export type TrackingStatus = {
   trackingQuality: 'notAvailable' | 'limited' | 'normal';
   lidarAvailable: boolean;
   surfaceDetected: boolean;
+  /** Quanto ARKit ha mappato l'ambiente: sotto 'extending' l'ancoraggio deriva. */
+  mappingStatus: MappingStatus;
+  /** Numero di blocchi di mesh LiDAR ricostruiti finora. */
+  meshAnchors: number;
 };
 
 export type ZoneError = {

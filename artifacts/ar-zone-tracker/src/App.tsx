@@ -1,5 +1,11 @@
 import { useEffect, useState } from 'react';
-import { arZone, isNativeRuntime, type ZoneState, type ZoneStatus } from '@/native/arZone';
+import {
+  arZone,
+  isNativeRuntime,
+  type TrackingStatus,
+  type ZoneState,
+  type ZoneStatus,
+} from '@/native/arZone';
 
 /** Misure della zona in centimetri: unica fonte di verita per UI e plugin.
  *  ARKit ragiona in metri, quindi la conversione avviene solo al confine nativo. */
@@ -14,10 +20,34 @@ const STATES: ReadonlyArray<{ key: ZoneState; label: string }> = [
   { key: 'inside', label: 'Completamente dentro' },
 ];
 
+/** La zona resta ferma solo se ARKit ha gia mappato abbastanza ambiente:
+ *  piazzarla prima e la causa principale della deriva. */
+function scanReady(tracking: TrackingStatus | null): boolean {
+  if (!tracking) return false;
+  if (tracking.trackingQuality !== 'normal') return false;
+  if (!tracking.surfaceDetected) return false;
+  return tracking.mappingStatus === 'extending' || tracking.mappingStatus === 'mapped';
+}
+
+function scanHint(tracking: TrackingStatus | null): string {
+  if (!tracking) return 'Avvio fotocamera...';
+  if (tracking.trackingQuality !== 'normal') {
+    return 'Muovi lentamente il telefono';
+  }
+  if (tracking.lidarAvailable && tracking.meshAnchors > 0) {
+    return `Scansione LiDAR: ${tracking.meshAnchors} blocchi`;
+  }
+  if (!tracking.surfaceDetected) {
+    return 'Inquadra il pavimento';
+  }
+  return 'Scansione ambiente...';
+}
+
 function ZoneOverlay() {
   const nativeRuntime = isNativeRuntime();
   const [phase, setPhase] = useState<Phase>('starting');
   const [status, setStatus] = useState<ZoneStatus | null>(null);
+  const [tracking, setTracking] = useState<TrackingStatus | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -31,6 +61,9 @@ function ZoneOverlay() {
         subscriptions = await Promise.all([
           arZone.addListener('zoneStatus', (next) => {
             if (!disposed) setStatus(next);
+          }),
+          arZone.addListener('trackingStatus', (next) => {
+            if (!disposed) setTracking(next);
           }),
           arZone.addListener('zoneError', ({ message }) => {
             if (!disposed) setError(message);
@@ -73,6 +106,11 @@ function ZoneOverlay() {
     }
   };
 
+  const replace = () => {
+    setPhase('placing');
+    setStatus(null);
+  };
+
   if (!nativeRuntime) {
     return (
       <div className="zone-notice">
@@ -83,6 +121,7 @@ function ZoneOverlay() {
 
   const state: ZoneState = status?.state ?? 'outside';
   const percent = Math.min(100, Math.max(0, status?.percent ?? 0));
+  const ready = scanReady(tracking);
 
   return (
     <div className="zone-overlay">
@@ -101,20 +140,23 @@ function ZoneOverlay() {
               </span>
             ))}
           </div>
-          <button type="button" className="zone-secondary" onClick={place}>
+          <button type="button" className="zone-secondary" onClick={replace}>
             Riposiziona
           </button>
         </div>
       ) : (
-        <button
-          type="button"
-          className="zone-primary"
-          onClick={place}
-          disabled={phase === 'starting'}
-          data-testid="button-place-zone"
-        >
-          {phase === 'starting' ? 'Avvio fotocamera...' : 'Posiziona zona'}
-        </button>
+        <>
+          <p className="zone-scan">{ready ? 'Scansione pronta' : scanHint(tracking)}</p>
+          <button
+            type="button"
+            className="zone-primary"
+            onClick={place}
+            disabled={!ready}
+            data-testid="button-place-zone"
+          >
+            Posiziona zona
+          </button>
+        </>
       )}
     </div>
   );
