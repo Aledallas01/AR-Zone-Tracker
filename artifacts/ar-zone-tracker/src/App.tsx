@@ -36,7 +36,7 @@ import {
 
 /** Misure della zona in centimetri: unica fonte di verità per UI e plugin.
  *  ARKit ragiona in metri, quindi la conversione avviene solo al confine nativo. */
-const ZONE_CM = { width: 2000, depth: 1000, height: 500 } as const;
+const ZONE_CM = { width: 20, depth: 10, height: 5 } as const;
 const CM_PER_M = 100;
 const ZONE_LABEL = `${ZONE_CM.width} × ${ZONE_CM.depth} × ${ZONE_CM.height}`;
 const toCm = (meters: number) => `${(meters * CM_PER_M).toFixed(0)} cm`;

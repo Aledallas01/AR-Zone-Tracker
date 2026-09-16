@@ -49,9 +49,11 @@ public class ARZoneNative: CAPPlugin, CAPBridgedPlugin, ARSessionDelegate {
             return
         }
 
-        zoneWidth = max(0.1, Float(call.getDouble("width") ?? 20))
-        zoneDepth = max(0.1, Float(call.getDouble("depth") ?? 10))
-        zoneHeight = max(0.1, Float(call.getDouble("height") ?? 5))
+        // Clamp a 1 cm: il minimo precedente di 0,1 m alzava silenziosamente
+        // qualsiasi quota sotto i 10 cm.
+        zoneWidth = max(0.01, Float(call.getDouble("width") ?? 0.2))
+        zoneDepth = max(0.01, Float(call.getDouble("depth") ?? 0.1))
+        zoneHeight = max(0.01, Float(call.getDouble("height") ?? 0.05))
         zoneIsPlaced = false
         horizontalPlaneDetected = false
         zoneNode?.removeFromParentNode()
@@ -294,9 +296,20 @@ public class ARZoneNative: CAPPlugin, CAPBridgedPlugin, ARSessionDelegate {
         let xOverlap = intervalOverlap(position.x, half: phoneHalfWidth, lower: -zoneWidth / 2, upper: zoneWidth / 2)
         let yOverlap = intervalOverlap(position.y, half: phoneHalfHeight, lower: 0, upper: zoneHeight)
         let zOverlap = intervalOverlap(position.z, half: phoneHalfDepth, lower: -zoneDepth / 2, upper: zoneDepth / 2)
-        let phoneVolume = (phoneHalfWidth * 2) * (phoneHalfHeight * 2) * (phoneHalfDepth * 2)
+        // La percentuale è rapportata all'overlap MASSIMO geometricamente
+        // possibile, non al volume del telefono: con una zona più piccola del
+        // telefono quest'ultimo non potrebbe mai superare il ~17% e lo stato
+        // "inside" sarebbe irraggiungibile. Per zone più grandi del telefono
+        // il massimo coincide col volume del telefono, quindi il
+        // comportamento resta identico a prima.
         let overlapVolume = xOverlap * yOverlap * zOverlap
-        let percent = min(100, max(0, (overlapVolume / phoneVolume) * 100))
+        let maxOverlap =
+            min(phoneHalfWidth * 2, zoneWidth)
+            * min(phoneHalfHeight * 2, zoneHeight)
+            * min(phoneHalfDepth * 2, zoneDepth)
+        let percent = maxOverlap > 0
+            ? min(100, max(0, (overlapVolume / maxOverlap) * 100))
+            : 0
         let state: String = percent <= 0 ? "outside" : (percent >= 98 ? "inside" : "partial")
 
         if state != currentZoneState {
