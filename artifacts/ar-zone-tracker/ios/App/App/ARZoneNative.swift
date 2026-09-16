@@ -7,13 +7,15 @@ import SceneKit
 import UIKit
 
 @objc(ARZoneNative)
-public class ARZoneNative: CAPPlugin, CAPBridgedPlugin, ARSessionDelegate, ARSCNViewDelegate {
+public class ARZoneNative: CAPPlugin, CAPBridgedPlugin, ARSessionDelegate, ARSCNViewDelegate,
+    UIGestureRecognizerDelegate {
     public let identifier = "ARZoneNative"
     public let jsName = "ARZoneNative"
     public let pluginMethods: [CAPPluginMethod] = [
         CAPPluginMethod(name: "isSupported", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "startSession", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "placeZone", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "previewZone", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "resetSession", returnType: CAPPluginReturnPromise),
     ]
 
@@ -43,6 +45,16 @@ public class ARZoneNative: CAPPlugin, CAPBridgedPlugin, ARSessionDelegate, ARSCN
     private var meshNodes: [UUID: SCNNode] = [:]
     private var showsScanMesh = true
 
+    /// Anteprima del volume prima della conferma: segue il centro dello schermo
+    /// cosi si vede esattamente dove finira il box.
+    private var previewNode: SCNNode?
+    private var previewTransform: simd_float4x4?
+    private var previewPlaneAnchorID: UUID?
+    private var showsPreview = true
+
+    /// Quote sui lati, accese e spente con un doppio tap sul box.
+    private var dimensionsVisible = false
+
     override public func load() {
         super.load()
         arSession.delegate = self
@@ -70,6 +82,7 @@ public class ARZoneNative: CAPPlugin, CAPBridgedPlugin, ARSessionDelegate, ARSCN
         zoneHeight = max(0.01, Float(call.getDouble("height") ?? 0.05))
         clearZone()
         showsScanMesh = true
+        showsPreview = true
 
         let configuration = ARWorldTrackingConfiguration()
         // Anche i piani verticali: piu ancore stabili in scena significa meno
@@ -108,70 +121,28 @@ public class ARZoneNative: CAPPlugin, CAPBridgedPlugin, ARSessionDelegate, ARSCN
         }
     }
 
+    /// Conferma la posizione mostrata dall'anteprima. Si usa la trasformazione
+    /// gia mostrata a schermo, non una nuova: cosi il box finisce esattamente
+    /// dove l'utente lo stava vedendo.
     @objc func placeZone(_ call: CAPPluginCall) {
-        guard let frame = arSession.currentFrame else {
-            call.reject("ARKit non ha ancora prodotto un frame. Muovi lentamente il telefono.")
-            return
-        }
-        guard let sceneView = arView else {
-            call.reject("La vista della fotocamera ARKit non e disponibile.")
-            return
-        }
-        guard frame.camera.trackingState == .normal else {
-            call.reject("Tracking ARKit limitato. Muovi lentamente il telefono e riprova.")
+        guard let transform = previewTransform else {
+            call.reject("Nessuna superficie inquadrata. Punta il centro dello schermo verso il pavimento.")
             return
         }
 
-        let screenCenter = CGPoint(x: sceneView.bounds.midX, y: sceneView.bounds.midY)
-        // Ordine di preferenza: geometria della mesh LiDAR, poi piani gia
-        // rilevati, e solo come ultima risorsa una stima al volo. Le stime sono
-        // la causa principale di un ancoraggio che poi scivola.
-        var hit: ARRaycastResult?
-        for target in [ARRaycastQuery.Target.existingPlaneGeometry, .estimatedPlane] {
-            if hit != nil { break }
-            if let query = sceneView.raycastQuery(
-                from: screenCenter,
-                allowing: target,
-                alignment: .horizontal
-            ) {
-                hit = arSession.raycast(query).first
-            }
-        }
-
-        guard let result = hit else {
-            call.reject("Nessuna superficie rilevata. Inquadra il pavimento e muovi lentamente il telefono.")
-            return
-        }
-
-        let camera = frame.camera.transform
-        let forward = SIMD3<Float>(-camera.columns.2.x, 0, -camera.columns.2.z)
-        let forwardLength = simd_length(forward)
-        guard forwardLength > 0.001 else {
-            call.reject("Orientamento della fotocamera non valido.")
-            return
-        }
-
-        let normalizedForward = forward / forwardLength
-        let right = SIMD3<Float>(normalizedForward.z, 0, -normalizedForward.x)
-        let floorPosition = SIMD3<Float>(
-            result.worldTransform.columns.3.x,
-            result.worldTransform.columns.3.y,
-            result.worldTransform.columns.3.z
-        )
-
-        var transform = matrix_identity_float4x4
-        transform.columns.0 = SIMD4<Float>(right.x, 0, right.z, 0)
-        transform.columns.1 = SIMD4<Float>(0, 1, 0, 0)
-        transform.columns.2 = SIMD4<Float>(-normalizedForward.x, 0, -normalizedForward.z, 0)
-        transform.columns.3 = SIMD4<Float>(floorPosition.x, floorPosition.y, floorPosition.z, 1)
-
+        let planeID = previewPlaneAnchorID
         clearZone()
         zoneTransform = transform
         zoneIsPlaced = true
+        showsPreview = false
         showsScanMesh = false
         removeScanMesh()
+        hidePreview()
 
-        if let planeAnchor = result.anchor as? ARPlaneAnchor {
+        if let planeID,
+           let planeAnchor = arSession.currentFrame?.anchors.first(where: {
+               $0.identifier == planeID
+           }) as? ARPlaneAnchor {
             // Caso migliore: la zona diventa figlia del piano rilevato. ARKit
             // raffina di continuo posizione ed estensione dei piani, e la zona
             // segue quelle correzioni invece di restare indietro.
@@ -189,8 +160,17 @@ public class ARZoneNative: CAPPlugin, CAPBridgedPlugin, ARSessionDelegate, ARSCN
         call.resolve(["placed": true])
     }
 
+    /// Torna in anteprima senza fermare la sessione: la zona posizionata sparisce
+    /// e il box torna a seguire il centro dello schermo.
+    @objc func previewZone(_ call: CAPPluginCall) {
+        clearZone()
+        showsPreview = true
+        call.resolve(["preview": true])
+    }
+
     @objc func resetSession(_ call: CAPPluginCall) {
         clearZone()
+        showsPreview = true
         showsScanMesh = true
         arSession.pause()
         DispatchQueue.main.async { [weak self] in
@@ -239,7 +219,119 @@ public class ARZoneNative: CAPPlugin, CAPBridgedPlugin, ARSessionDelegate, ARSCN
         // assegna: la riprendiamo, altrimenti gli eventi di frame non arrivano.
         arSession.delegate = self
         arView = sceneView
+
+        // La webview copre tutto lo schermo, quindi i tocchi non arrivano mai
+        // alla scena: il riconoscitore va messo sulla webview, senza rubarle
+        // gli eventi, e il test 3D si fa convertendo le coordinate.
+        let doubleTap = UITapGestureRecognizer(target: self, action: #selector(handleDoubleTap(_:)))
+        doubleTap.numberOfTapsRequired = 2
+        doubleTap.cancelsTouchesInView = false
+        doubleTap.delegate = self
+        (bridge?.webView ?? viewController.view).addGestureRecognizer(doubleTap)
+
         return true
+    }
+
+    public func gestureRecognizer(
+        _ gestureRecognizer: UIGestureRecognizer,
+        shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer
+    ) -> Bool {
+        true
+    }
+
+    @objc private func handleDoubleTap(_ gesture: UITapGestureRecognizer) {
+        guard let sceneView = arView, let zone = zoneNode else { return }
+        let point = gesture.location(in: sceneView)
+        let hits = sceneView.hitTest(point, options: [
+            SCNHitTestOption.searchMode.rawValue: SCNHitTestSearchMode.all.rawValue,
+        ])
+        let touchedZone = hits.contains { hit in
+            var node: SCNNode? = hit.node
+            while let current = node {
+                if current === zone { return true }
+                node = current.parent
+            }
+            return false
+        }
+        guard touchedZone else { return }
+
+        dimensionsVisible.toggle()
+        zone.childNode(withName: "dimensions", recursively: false)?.isHidden = !dimensionsVisible
+    }
+
+    // MARK: - Anteprima del posizionamento
+
+    /// Trasformazione del box a partire dal centro dello schermo: raycast sulla
+    /// geometria gia rilevata e orientamento preso dalla direzione della camera.
+    private func placementTarget(in sceneView: ARSCNView, frame: ARFrame) -> (simd_float4x4, UUID?)? {
+        let screenCenter = CGPoint(x: sceneView.bounds.midX, y: sceneView.bounds.midY)
+        var hit: ARRaycastResult?
+        for target in [ARRaycastQuery.Target.existingPlaneGeometry, .estimatedPlane] {
+            if hit != nil { break }
+            if let query = sceneView.raycastQuery(
+                from: screenCenter,
+                allowing: target,
+                alignment: .horizontal
+            ) {
+                hit = arSession.raycast(query).first
+            }
+        }
+        guard let result = hit else { return nil }
+
+        let camera = frame.camera.transform
+        let forward = SIMD3<Float>(-camera.columns.2.x, 0, -camera.columns.2.z)
+        let forwardLength = simd_length(forward)
+        guard forwardLength > 0.001 else { return nil }
+
+        let normalizedForward = forward / forwardLength
+        let right = SIMD3<Float>(normalizedForward.z, 0, -normalizedForward.x)
+
+        var transform = matrix_identity_float4x4
+        transform.columns.0 = SIMD4<Float>(right.x, 0, right.z, 0)
+        transform.columns.1 = SIMD4<Float>(0, 1, 0, 0)
+        transform.columns.2 = SIMD4<Float>(-normalizedForward.x, 0, -normalizedForward.z, 0)
+        transform.columns.3 = result.worldTransform.columns.3
+
+        return (transform, (result.anchor as? ARPlaneAnchor)?.identifier)
+    }
+
+    private func updatePreview(in sceneView: ARSCNView) {
+        guard showsPreview, !zoneIsPlaced else {
+            hidePreview()
+            return
+        }
+        guard let frame = arSession.currentFrame,
+              frame.camera.trackingState == .normal,
+              let (transform, planeID) = placementTarget(in: sceneView, frame: frame) else {
+            previewTransform = nil
+            previewPlaneAnchorID = nil
+            previewNode?.isHidden = true
+            return
+        }
+
+        previewTransform = transform
+        previewPlaneAnchorID = planeID
+
+        let node: SCNNode
+        if let existing = previewNode {
+            node = existing
+        } else {
+            node = buildZoneNode()
+            node.opacity = 0.55
+            sceneView.scene.rootNode.addChildNode(node)
+            previewNode = node
+        }
+        node.isHidden = false
+        node.simdTransform = transform
+    }
+
+    private func hidePreview() {
+        previewTransform = nil
+        previewPlaneAnchorID = nil
+        DispatchQueue.main.async { [weak self] in
+            self?.previewNode?.removeFromParentNode()
+            self?.previewNode = nil
+        }
     }
 
     // MARK: - Mesh della scansione
@@ -377,6 +469,11 @@ public class ARZoneNative: CAPPlugin, CAPBridgedPlugin, ARSessionDelegate, ARSCN
             }
         }
 
+        let dimensions = buildDimensionLabels(thickness: thickness)
+        dimensions.name = "dimensions"
+        dimensions.isHidden = !dimensionsVisible
+        container.addChildNode(dimensions)
+
         return container
     }
 
@@ -391,6 +488,70 @@ public class ARZoneNative: CAPPlugin, CAPBridgedPlugin, ARSessionDelegate, ARSCN
         let node = SCNNode(geometry: box)
         node.position = position
         node.renderingOrder = 11
+        return node
+    }
+
+    // MARK: - Quote
+
+    private func buildDimensionLabels(thickness: Float) -> SCNNode {
+        let group = SCNNode()
+        let margin = thickness * 3
+        let halfX = zoneWidth / 2
+        let halfY = zoneHeight / 2
+        let halfZ = zoneDepth / 2
+        let centerY = zoneHeight / 2
+
+        group.addChildNode(labelNode(
+            text: centimetres(zoneWidth),
+            position: SCNVector3(0, centerY + halfY + margin, -halfZ - margin)
+        ))
+        group.addChildNode(labelNode(
+            text: centimetres(zoneDepth),
+            position: SCNVector3(halfX + margin, centerY + halfY + margin, 0)
+        ))
+        group.addChildNode(labelNode(
+            text: centimetres(zoneHeight),
+            position: SCNVector3(-halfX - margin, centerY, halfZ + margin)
+        ))
+
+        return group
+    }
+
+    private func centimetres(_ metres: Float) -> String {
+        String(format: "%.0f cm", metres * 100)
+    }
+
+    private func labelNode(text: String, position: SCNVector3) -> SCNNode {
+        let geometry = SCNText(string: text, extrusionDepth: 0)
+        geometry.font = UIFont.systemFont(ofSize: 10, weight: .semibold)
+        geometry.flatness = 0.1
+
+        let material = SCNMaterial()
+        material.lightingModel = .constant
+        material.isDoubleSided = true
+        material.writesToDepthBuffer = false
+        material.diffuse.contents = UIColor.white
+        material.emission.contents = UIColor.white.withAlphaComponent(0.8)
+        geometry.materials = [material]
+
+        let node = SCNNode(geometry: geometry)
+        // SCNText misura in punti: va riscalato per diventare centimetri reali.
+        let scale: Float = 0.0018
+        node.scale = SCNVector3(scale, scale, scale)
+        // Centra il testo sul proprio punto di ancoraggio.
+        let (minBound, maxBound) = geometry.boundingBox
+        node.pivot = SCNMatrix4MakeTranslation(
+            (minBound.x + maxBound.x) / 2,
+            (minBound.y + maxBound.y) / 2,
+            0
+        )
+        node.position = position
+        node.renderingOrder = 12
+
+        let billboard = SCNBillboardConstraint()
+        billboard.freeAxes = .all
+        node.constraints = [billboard]
+
         return node
     }
 
@@ -445,6 +606,11 @@ public class ARZoneNative: CAPPlugin, CAPBridgedPlugin, ARSessionDelegate, ARSCN
     }
 
     // MARK: - ARSCNViewDelegate
+
+    public func renderer(_ renderer: SCNSceneRenderer, updateAtTime time: TimeInterval) {
+        guard let sceneView = arView else { return }
+        updatePreview(in: sceneView)
+    }
 
     public func renderer(_ renderer: SCNSceneRenderer, didAdd node: SCNNode, for anchor: ARAnchor) {
         if let meshAnchor = anchor as? ARMeshAnchor {
@@ -541,6 +707,7 @@ public class ARZoneNative: CAPPlugin, CAPBridgedPlugin, ARSessionDelegate, ARSCN
             "surfaceDetected": horizontalPlaneDetected,
             "mappingStatus": mappingStatus,
             "meshAnchors": frame.anchors.filter { $0 is ARMeshAnchor }.count,
+            "previewReady": previewTransform != nil,
         ]
         notifyListeners("trackingStatus", data: trackingPayload)
 

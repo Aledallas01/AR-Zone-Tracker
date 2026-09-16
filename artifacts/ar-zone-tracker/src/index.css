@@ -800,3 +800,11 @@ body,
   font-size: 12px;
   letter-spacing: .03em;
 }
+
+.zone-tip {
+  margin: -2px 0 0;
+  color: rgba(214, 236, 255, .5);
+  font-size: 10px;
+  letter-spacing: .03em;
+  text-align: center;
+}

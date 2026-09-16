@@ -25,7 +25,7 @@ const STATES: ReadonlyArray<{ key: ZoneState; label: string }> = [
 function scanReady(tracking: TrackingStatus | null): boolean {
   if (!tracking) return false;
   if (tracking.trackingQuality !== 'normal') return false;
-  if (!tracking.surfaceDetected) return false;
+  if (!tracking.previewReady) return false;
   return tracking.mappingStatus === 'extending' || tracking.mappingStatus === 'mapped';
 }
 
@@ -37,8 +37,8 @@ function scanHint(tracking: TrackingStatus | null): string {
   if (tracking.lidarAvailable && tracking.meshAnchors > 0) {
     return `Scansione LiDAR: ${tracking.meshAnchors} blocchi`;
   }
-  if (!tracking.surfaceDetected) {
-    return 'Inquadra il pavimento';
+  if (!tracking.previewReady) {
+    return 'Inquadra il pavimento al centro';
   }
   return 'Scansione ambiente...';
 }
@@ -106,9 +106,14 @@ function ZoneOverlay() {
     }
   };
 
-  const replace = () => {
-    setPhase('placing');
+  const replace = async () => {
     setStatus(null);
+    setPhase('placing');
+    try {
+      await arZone.previewZone();
+    } catch {
+      setError('Impossibile tornare in anteprima.');
+    }
   };
 
   if (!nativeRuntime) {
@@ -143,10 +148,13 @@ function ZoneOverlay() {
           <button type="button" className="zone-secondary" onClick={replace}>
             Riposiziona
           </button>
+          <p className="zone-tip">Doppio tap sul box per le misure dei lati</p>
         </div>
       ) : (
         <>
-          <p className="zone-scan">{ready ? 'Scansione pronta' : scanHint(tracking)}</p>
+          <p className="zone-scan">
+            {ready ? 'Anteprima agganciata - conferma quando ti piace' : scanHint(tracking)}
+          </p>
           <button
             type="button"
             className="zone-primary"

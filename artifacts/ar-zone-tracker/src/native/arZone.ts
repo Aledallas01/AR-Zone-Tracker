@@ -24,6 +24,9 @@ export type TrackingStatus = {
   mappingStatus: MappingStatus;
   /** Numero di blocchi di mesh LiDAR ricostruiti finora. */
   meshAnchors: number;
+  /** true quando l'anteprima sta agganciando una superficie: solo allora il
+   *  posizionamento ha senso, perche conferma esattamente cio che si vede. */
+  previewReady: boolean;
 };
 
 export type ZoneError = {
@@ -39,7 +42,10 @@ export type ARZoneNativePlugin = {
     depth: number;
     height: number;
   }): Promise<{ started: boolean; lidarAvailable: boolean }>;
+  /** Conferma la posizione mostrata dall'anteprima. */
   placeZone(): Promise<{ placed: boolean }>;
+  /** Rimuove la zona e torna all'anteprima, senza fermare la sessione. */
+  previewZone(): Promise<{ preview: boolean }>;
   resetSession(): Promise<void>;
   addListener(
     eventName: 'zoneStatus',
