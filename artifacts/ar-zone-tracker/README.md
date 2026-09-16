@@ -42,8 +42,9 @@ every 7 days. Keep AltServer running on Windows to renew it. The number of
 simultaneously signed apps is also limited by Apple's free provisioning rules.
 
 LiDAR is enabled automatically on devices that expose `ARFrame.sceneDepth`;
-other iPhones use regular ARKit world tracking. The browser preview is only a
-simulator and cannot access the native ARKit camera session.
+other iPhones use regular ARKit world tracking. The app has no simulator or
+mock position mode: the browser only says that the native iPhone app is
+required, and all coordinates and zone states come from ARKit frames.
 
 ### Local Mac build (optional)
 
@@ -61,6 +62,3 @@ pnpm --filter @workspace/ar-zone-tracker run cap:open
 `ios/App/App/ARZoneNative.swift`. The native detector measures the overlap
 between a small phone volume and the placed zone, which makes the boundary
 state meaningful instead of treating the phone as an infinitely small point.
-
-The browser preview intentionally includes a simulator so the interface can
-be reviewed without a LiDAR-capable iPhone.

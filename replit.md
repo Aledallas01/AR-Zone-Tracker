@@ -22,7 +22,7 @@ App Capacitor per iPhone che posiziona e monitora una zona AR di 20 × 10 × 5 m
 
 ## Where things live
 
-- `artifacts/ar-zone-tracker/src/App.tsx` — preview UI, setup flow and simulator.
+- `artifacts/ar-zone-tracker/src/App.tsx` — UI nativa, setup ARKit e monitoraggio della zona.
 - `artifacts/ar-zone-tracker/src/native/arZone.ts` — bridge TypeScript verso ARKit.
 - `artifacts/ar-zone-tracker/ios/App/App/ARZoneNative.swift` — plugin nativo per tracking, LiDAR e rilevamento della zona.
 - `artifacts/ar-zone-tracker/capacitor.config.ts` — configurazione Capacitor e identificativo iOS.
@@ -30,9 +30,10 @@ App Capacitor per iPhone che posiziona e monitora una zona AR di 20 × 10 × 5 m
 ## Architecture decisions
 
 - L'app usa Capacitor + ARKit, con un plugin Swift locale, perché il rilevamento spaziale affidabile richiede API native iOS.
-- La UI browser include un simulatore esplicito per verificare fuori/parzialmente/completamente dentro senza hardware.
+- La UI browser non simula il tracking: senza il runtime iOS nativo mostra solo che ARKit è richiesto.
 - La percentuale indica il volume di sovrapposizione tra il piccolo volume del telefono e la zona, non una distanza arbitraria.
 - LiDAR/scene depth è opzionale: ARKit world tracking continua a funzionare sui dispositivi senza LiDAR.
+- Il posizionamento usa un hit-test ARKit su una superficie orizzontale reale e il volume viene renderizzato nella scena nativa.
 
 ## Product
 

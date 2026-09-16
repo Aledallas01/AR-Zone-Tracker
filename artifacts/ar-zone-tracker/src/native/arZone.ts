@@ -14,6 +14,16 @@ export type ZoneStatus = {
   lidarAvailable: boolean;
 };
 
+export type TrackingStatus = {
+  trackingQuality: 'notAvailable' | 'limited' | 'normal';
+  lidarAvailable: boolean;
+  surfaceDetected: boolean;
+};
+
+export type ZoneError = {
+  message: string;
+};
+
 export type ARZoneNativePlugin = {
   isSupported(): Promise<{ supported: boolean; lidarAvailable: boolean }>;
   startSession(options: {
@@ -26,6 +36,14 @@ export type ARZoneNativePlugin = {
   addListener(
     eventName: 'zoneStatus',
     listenerFunc: (status: ZoneStatus) => void,
+  ): Promise<{ remove: () => Promise<void> }>;
+  addListener(
+    eventName: 'trackingStatus',
+    listenerFunc: (status: TrackingStatus) => void,
+  ): Promise<{ remove: () => Promise<void> }>;
+  addListener(
+    eventName: 'zoneError',
+    listenerFunc: (error: ZoneError) => void,
   ): Promise<{ remove: () => Promise<void> }>;
 };
 
