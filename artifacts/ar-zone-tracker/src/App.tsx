@@ -31,6 +31,9 @@ function scanReady(tracking: TrackingStatus | null): boolean {
 
 function scanHint(tracking: TrackingStatus | null): string {
   if (!tracking) return 'Avvio fotocamera...';
+  if (tracking.relocalizing) {
+    return 'Cerco la zona salvata: inquadra la stessa area';
+  }
   if (tracking.trackingQuality !== 'normal') {
     return 'Muovi lentamente il telefono';
   }
@@ -155,7 +158,13 @@ function ZoneOverlay() {
             previousState.current = next.state;
           }),
           arZone.addListener('trackingStatus', (next) => {
-            if (!disposed) setTracking(next);
+            if (disposed) return;
+            setTracking(next);
+            // Una zona ripristinata dalla mappa salvata e gia attiva: si entra
+            // direttamente in tracking senza passare dall'anteprima.
+            if (next.zonePlaced) {
+              setPhase((current) => (current === 'tracking' ? current : 'tracking'));
+            }
           }),
           arZone.addListener('zoneError', ({ message }) => {
             if (!disposed) setError(message);
@@ -226,6 +235,19 @@ function ZoneOverlay() {
       setSettingsOpen(false);
     } catch {
       setError('Impossibile salvare il comando rapido.');
+    }
+  };
+
+  const forgetSavedZone = async () => {
+    try {
+      await arZone.clearSavedZone();
+      await arZone.previewZone();
+      setStatus(null);
+      previousState.current = null;
+      setPhase('placing');
+      setSettingsOpen(false);
+    } catch {
+      setError('Impossibile cancellare la zona salvata.');
     }
   };
 
@@ -326,7 +348,16 @@ function ZoneOverlay() {
                 <dt>App Comandi Rapidi</dt>
                 <dd>{shortcutsAvailable ? 'Disponibile' : 'Non raggiungibile'}</dd>
               </div>
+              <div>
+                <dt>Zona salvata</dt>
+                <dd>{tracking?.hasSavedZone ? 'Ripristinata' : 'Nessuna'}</dd>
+              </div>
             </dl>
+            {tracking?.hasSavedZone ? (
+              <button type="button" className="zone-danger" onClick={forgetSavedZone}>
+                Dimentica zona salvata
+              </button>
+            ) : null}
             <div className="zone-sheet-actions">
               <button
                 type="button"

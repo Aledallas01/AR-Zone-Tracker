@@ -20,6 +20,7 @@ public class ARZoneNative: CAPPlugin, CAPBridgedPlugin, ARSessionDelegate, ARSCN
         CAPPluginMethod(name: "getShortcut", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "setShortcut", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "runShortcut", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "clearSavedZone", returnType: CAPPluginReturnPromise),
     ]
 
     /// La scelta del comando rapido vive in UserDefaults e non in localStorage:
@@ -62,10 +63,29 @@ public class ARZoneNative: CAPPlugin, CAPBridgedPlugin, ARSessionDelegate, ARSCN
     /// Quote sui lati, accese e spente con un doppio tap sul box.
     private var dimensionsVisible = false
 
+    /// Nome dell'ancora della zona: e la chiave con cui la si ritrova dentro
+    /// una ARWorldMap ricaricata.
+    private let zoneAnchorName = "arZone"
+    private var isRelocalizing = false
+    private var hasSavedZone = false
+
     override public func load() {
         super.load()
         arSession.delegate = self
         prepareHaptics()
+        // Il momento migliore per salvare e quando l'app esce di scena: la
+        // mappa e al massimo della completezza raggiunta in quella sessione.
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handleEnterBackground),
+            name: UIApplication.didEnterBackgroundNotification,
+            object: nil
+        )
+    }
+
+    @objc private func handleEnterBackground() {
+        guard zoneIsPlaced else { return }
+        saveWorld()
     }
 
     @objc func isSupported(_ call: CAPPluginCall) {
@@ -110,6 +130,19 @@ public class ARZoneNative: CAPPlugin, CAPBridgedPlugin, ARSessionDelegate, ARSCN
             configuration.frameSemantics.insert(.sceneDepth)
         }
 
+        // Se esiste una mappa salvata la si ricarica: ARKit entra in
+        // relocalizing finche non riconosce l'ambiente, poi ripristina da solo
+        // le ancore che la mappa conteneva, zona inclusa.
+        let savedMap = loadWorldMap()
+        if let savedMap {
+            configuration.initialWorldMap = savedMap
+            isRelocalizing = true
+            hasSavedZone = true
+        } else {
+            isRelocalizing = false
+            hasSavedZone = false
+        }
+
         DispatchQueue.main.async { [weak self] in
             guard let self else {
                 call.reject("Impossibile inizializzare la sessione ARKit.")
@@ -124,6 +157,7 @@ public class ARZoneNative: CAPPlugin, CAPBridgedPlugin, ARSessionDelegate, ARSCN
             call.resolve([
                 "started": true,
                 "lidarAvailable": lidarAvailable,
+                "restoringSavedZone": savedMap != nil,
             ])
         }
     }
@@ -164,6 +198,7 @@ public class ARZoneNative: CAPPlugin, CAPBridgedPlugin, ARSessionDelegate, ARSCN
             arSession.add(anchor: anchor)
         }
 
+        saveWorld()
         call.resolve(["placed": true])
     }
 
@@ -233,6 +268,48 @@ public class ARZoneNative: CAPPlugin, CAPBridgedPlugin, ARSessionDelegate, ARSCN
                     call.reject("Impossibile aprire Comandi Rapidi.")
                 }
             }
+        }
+    }
+
+    /// Dimentica la mappa salvata: serve quando si cambia stanza, altrimenti
+    /// ARKit resta bloccato a cercare un ambiente che non c'e piu.
+    @objc func clearSavedZone(_ call: CAPPluginCall) {
+        try? FileManager.default.removeItem(at: worldMapURL)
+        isRelocalizing = false
+        hasSavedZone = false
+        call.resolve(["cleared": true])
+    }
+
+    // MARK: - Persistenza della mappa
+
+    private var worldMapURL: URL {
+        let directory = FileManager.default.urls(
+            for: .applicationSupportDirectory,
+            in: .userDomainMask
+        )[0]
+        try? FileManager.default.createDirectory(
+            at: directory,
+            withIntermediateDirectories: true
+        )
+        return directory.appendingPathComponent("arzone-worldmap.arexperience")
+    }
+
+    private func loadWorldMap() -> ARWorldMap? {
+        guard let data = try? Data(contentsOf: worldMapURL) else { return nil }
+        return try? NSKeyedUnarchiver.unarchivedObject(ofClass: ARWorldMap.self, from: data)
+    }
+
+    /// La mappa include le ancore della sessione, quindi salvando si salva anche
+    /// la zona: al ricaricamento ARKit la ripropone da solo.
+    private func saveWorld() {
+        arSession.getCurrentWorldMap { [weak self] map, _ in
+            guard let self, let map else { return }
+            guard let data = try? NSKeyedArchiver.archivedData(
+                withRootObject: map,
+                requiringSecureCoding: true
+            ) else { return }
+            try? data.write(to: self.worldMapURL, options: [.atomic])
+            self.hasSavedZone = true
         }
     }
 
@@ -700,7 +777,12 @@ public class ARZoneNative: CAPPlugin, CAPBridgedPlugin, ARSessionDelegate, ARSCN
             return
         }
 
-        guard anchor.identifier == zoneAnchor?.identifier else { return }
+        // Per nome e non per identificatore: al ripristino l'ancora arriva dal
+        // renderer prima che la sessione abbia aggiornato zoneAnchor.
+        guard anchor.identifier == zoneAnchor?.identifier || anchor.name == zoneAnchorName else {
+            return
+        }
+        guard zoneNode == nil else { return }
         let zone = buildZoneNode()
         node.addChildNode(zone)
         zoneNode = zone
@@ -728,6 +810,19 @@ public class ARZoneNative: CAPPlugin, CAPBridgedPlugin, ARSessionDelegate, ARSCN
         if anchors.contains(where: { ($0 as? ARPlaneAnchor)?.alignment == .horizontal }) {
             horizontalPlaneDetected = true
         }
+
+        // Ancora della zona che riemerge da una mappa salvata: la sessione
+        // riparte gia posizionata, senza passare dall'anteprima.
+        if !zoneIsPlaced,
+           let restored = anchors.first(where: { $0.name == zoneAnchorName }) {
+            zoneAnchor = restored
+            zoneTransform = restored.transform
+            zoneIsPlaced = true
+            showsPreview = false
+            showsScanMesh = false
+            removeScanMesh()
+            hidePreview()
+        }
     }
 
     public func session(_ session: ARSession, didUpdate anchors: [ARAnchor]) {
@@ -749,8 +844,16 @@ public class ARZoneNative: CAPPlugin, CAPBridgedPlugin, ARSessionDelegate, ARSCN
         switch frame.camera.trackingState {
         case .normal:
             trackingQuality = "normal"
-        case .limited:
+            isRelocalizing = false
+        case .limited(let reason):
             trackingQuality = "limited"
+            // Relocalizing significa che ARKit sta cercando di riconoscere
+            // l'ambiente della mappa salvata: e un'attesa normale, non un errore.
+            if case .relocalizing = reason {
+                isRelocalizing = true
+            } else {
+                isRelocalizing = false
+            }
         @unknown default:
             trackingQuality = "notAvailable"
         }
@@ -776,6 +879,9 @@ public class ARZoneNative: CAPPlugin, CAPBridgedPlugin, ARSessionDelegate, ARSCN
             "mappingStatus": mappingStatus,
             "meshAnchors": frame.anchors.filter { $0 is ARMeshAnchor }.count,
             "previewReady": previewTransform != nil,
+            "relocalizing": isRelocalizing,
+            "zonePlaced": zoneIsPlaced,
+            "hasSavedZone": hasSavedZone,
         ]
         notifyListeners("trackingStatus", data: trackingPayload)
 

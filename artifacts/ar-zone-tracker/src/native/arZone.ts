@@ -27,6 +27,12 @@ export type TrackingStatus = {
   /** true quando l'anteprima sta agganciando una superficie: solo allora il
    *  posizionamento ha senso, perche conferma esattamente cio che si vede. */
   previewReady: boolean;
+  /** ARKit sta cercando di riconoscere l'ambiente della mappa salvata. */
+  relocalizing: boolean;
+  /** true quando una zona e attiva, anche se ripristinata da una mappa. */
+  zonePlaced: boolean;
+  /** Esiste una mappa salvata su disco. */
+  hasSavedZone: boolean;
 };
 
 export type ZoneError = {
@@ -41,7 +47,7 @@ export type ARZoneNativePlugin = {
     width: number;
     depth: number;
     height: number;
-  }): Promise<{ started: boolean; lidarAvailable: boolean }>;
+  }): Promise<{ started: boolean; lidarAvailable: boolean; restoringSavedZone: boolean }>;
   /** Conferma la posizione mostrata dall'anteprima. */
   placeZone(): Promise<{ placed: boolean }>;
   /** Rimuove la zona e torna all'anteprima, senza fermare la sessione. */
@@ -51,6 +57,8 @@ export type ARZoneNativePlugin = {
   setShortcut(options: { name: string }): Promise<{ name: string; configured: boolean }>;
   /** Apre Comandi Rapidi ed esegue lo shortcut indicato, o quello salvato. */
   runShortcut(options?: { name?: string }): Promise<{ launched: boolean; name: string }>;
+  /** Dimentica la mappa salvata: necessario quando si cambia stanza. */
+  clearSavedZone(): Promise<{ cleared: boolean }>;
   resetSession(): Promise<void>;
   addListener(
     eventName: 'zoneStatus',

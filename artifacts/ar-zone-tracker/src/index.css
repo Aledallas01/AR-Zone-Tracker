@@ -910,3 +910,16 @@ body,
   font-weight: 600;
   text-align: right;
 }
+
+.zone-danger {
+  width: 100%;
+  margin-top: 14px;
+  padding: 11px 16px;
+  border: 1px solid rgba(255, 138, 138, .35);
+  border-radius: 12px;
+  background: transparent;
+  color: #ff9b9b;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+}
