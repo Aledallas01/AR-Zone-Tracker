@@ -46,6 +46,11 @@ export type ARZoneNativePlugin = {
   placeZone(): Promise<{ placed: boolean }>;
   /** Rimuove la zona e torna all'anteprima, senza fermare la sessione. */
   previewZone(): Promise<{ preview: boolean }>;
+  /** Comando rapido salvato sul dispositivo (UserDefaults, non localStorage). */
+  getShortcut(): Promise<{ name: string; configured: boolean; available: boolean }>;
+  setShortcut(options: { name: string }): Promise<{ name: string; configured: boolean }>;
+  /** Apre Comandi Rapidi ed esegue lo shortcut indicato, o quello salvato. */
+  runShortcut(options?: { name?: string }): Promise<{ launched: boolean; name: string }>;
   resetSession(): Promise<void>;
   addListener(
     eventName: 'zoneStatus',

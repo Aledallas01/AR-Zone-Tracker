@@ -17,7 +17,14 @@ public class ARZoneNative: CAPPlugin, CAPBridgedPlugin, ARSessionDelegate, ARSCN
         CAPPluginMethod(name: "placeZone", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "previewZone", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "resetSession", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "getShortcut", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "setShortcut", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "runShortcut", returnType: CAPPluginReturnPromise),
     ]
+
+    /// La scelta del comando rapido vive in UserDefaults e non in localStorage:
+    /// iOS puo svuotare lo storage della webview sotto pressione di memoria.
+    private let shortcutKey = "arzone.shortcutName"
 
     // Azzurro scuro per il volume, spigoli piu scuri e spessi.
     private let zoneFillColor = UIColor(red: 0.09, green: 0.33, blue: 0.58, alpha: 1)
@@ -166,6 +173,67 @@ public class ARZoneNative: CAPPlugin, CAPBridgedPlugin, ARSessionDelegate, ARSCN
         clearZone()
         showsPreview = true
         call.resolve(["preview": true])
+    }
+
+    // MARK: - Comando rapido
+
+    @objc func getShortcut(_ call: CAPPluginCall) {
+        let name = UserDefaults.standard.string(forKey: shortcutKey) ?? ""
+        DispatchQueue.main.async {
+            let available = URL(string: "shortcuts://").map {
+                UIApplication.shared.canOpenURL($0)
+            } ?? false
+            call.resolve([
+                "name": name,
+                "configured": !name.isEmpty,
+                "available": available,
+            ])
+        }
+    }
+
+    @objc func setShortcut(_ call: CAPPluginCall) {
+        let name = (call.getString("name") ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        if name.isEmpty {
+            UserDefaults.standard.removeObject(forKey: shortcutKey)
+        } else {
+            UserDefaults.standard.set(name, forKey: shortcutKey)
+        }
+        call.resolve(["name": name, "configured": !name.isEmpty])
+    }
+
+    /// Lancia il comando rapido. Si usa x-callback-url con x-success: senza,
+    /// alla fine dello shortcut si resterebbe dentro l'app Comandi Rapidi.
+    @objc func runShortcut(_ call: CAPPluginCall) {
+        let explicit = (call.getString("name") ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let stored = UserDefaults.standard.string(forKey: shortcutKey) ?? ""
+        let name = explicit.isEmpty ? stored : explicit
+        guard !name.isEmpty else {
+            call.reject("Nessun comando rapido configurato.")
+            return
+        }
+
+        var components = URLComponents(string: "shortcuts://x-callback-url/run-shortcut")
+        components?.queryItems = [
+            URLQueryItem(name: "name", value: name),
+            URLQueryItem(name: "x-success", value: "arzonetracker://"),
+            URLQueryItem(name: "x-error", value: "arzonetracker://"),
+        ]
+        guard let url = components?.url else {
+            call.reject("Nome del comando rapido non valido.")
+            return
+        }
+
+        DispatchQueue.main.async {
+            UIApplication.shared.open(url, options: [:]) { opened in
+                if opened {
+                    call.resolve(["launched": true, "name": name])
+                } else {
+                    call.reject("Impossibile aprire Comandi Rapidi.")
+                }
+            }
+        }
     }
 
     @objc func resetSession(_ call: CAPPluginCall) {

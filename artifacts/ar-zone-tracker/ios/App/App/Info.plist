@@ -24,6 +24,21 @@
 	<string>$(CURRENT_PROJECT_VERSION)</string>
 	<key>NSCameraUsageDescription</key>
 	<string>AR Zone Tracker usa la fotocamera e ARKit per posizionare la zona virtuale e rilevare la tua posizione nello spazio.</string>
+	<key>LSApplicationQueriesSchemes</key>
+	<array>
+		<string>shortcuts</string>
+	</array>
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleURLName</key>
+			<string>com.arzonetracker.app</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>arzonetracker</string>
+			</array>
+		</dict>
+	</array>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
 	<key>UIApplicationSceneManifest</key>

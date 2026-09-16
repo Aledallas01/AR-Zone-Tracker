@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
   arZone,
   isNativeRuntime,
@@ -43,12 +43,88 @@ function scanHint(tracking: TrackingStatus | null): string {
   return 'Scansione ambiente...';
 }
 
+/** Pannello per scegliere il comando rapido. iOS non espone l'elenco degli
+ *  shortcut dell'utente, quindi la scelta avviene per nome esatto. */
+function ShortcutPanel({
+  title,
+  initialName,
+  onSave,
+  onClose,
+  onTest,
+}: {
+  title: string;
+  initialName: string;
+  onSave: (name: string) => void;
+  onClose: () => void;
+  onTest?: (name: string) => void;
+}) {
+  const [name, setName] = useState(initialName);
+
+  return (
+    <div className="zone-sheet-backdrop" role="dialog" aria-modal="true">
+      <div className="zone-sheet">
+        <h2>{title}</h2>
+        <p className="zone-sheet-copy">
+          Scrivi il nome esatto del comando rapido, come compare nell&rsquo;app Comandi Rapidi.
+        </p>
+        <input
+          className="zone-input"
+          type="text"
+          value={name}
+          placeholder="Nome del comando rapido"
+          autoCapitalize="none"
+          autoCorrect="off"
+          onChange={(event) => setName(event.target.value)}
+          data-testid="input-shortcut-name"
+        />
+        <div className="zone-sheet-actions">
+          <button type="button" className="zone-secondary" onClick={onClose}>
+            Annulla
+          </button>
+          {onTest ? (
+            <button
+              type="button"
+              className="zone-secondary"
+              onClick={() => onTest(name.trim())}
+              disabled={!name.trim()}
+            >
+              Prova
+            </button>
+          ) : null}
+          <button
+            type="button"
+            className="zone-primary compact"
+            onClick={() => onSave(name.trim())}
+            disabled={!name.trim()}
+            data-testid="button-save-shortcut"
+          >
+            Salva
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function ZoneOverlay() {
   const nativeRuntime = isNativeRuntime();
   const [phase, setPhase] = useState<Phase>('starting');
   const [status, setStatus] = useState<ZoneStatus | null>(null);
   const [tracking, setTracking] = useState<TrackingStatus | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [shortcut, setShortcut] = useState('');
+  const [shortcutsAvailable, setShortcutsAvailable] = useState(true);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [askShortcut, setAskShortcut] = useState(false);
+
+  // Il listener nativo viene registrato una volta sola: con lo state leggerebbe
+  // per sempre il valore iniziale, quindi serve un ref.
+  const shortcutRef = useRef('');
+  const previousState = useRef<ZoneState | null>(null);
+
+  useEffect(() => {
+    shortcutRef.current = shortcut;
+  }, [shortcut]);
 
   useEffect(() => {
     if (!nativeRuntime) return;
@@ -56,11 +132,27 @@ function ZoneOverlay() {
     let disposed = false;
     let subscriptions: Array<{ remove: () => Promise<void> }> = [];
 
+    const enteredZone = () => {
+      const name = shortcutRef.current;
+      if (!name) {
+        setAskShortcut(true);
+        return;
+      }
+      void arZone.runShortcut({ name }).catch(() => {
+        setError('Comando rapido non trovato. Controlla il nome nelle impostazioni.');
+      });
+    };
+
     const connect = async () => {
       try {
         subscriptions = await Promise.all([
           arZone.addListener('zoneStatus', (next) => {
-            if (!disposed) setStatus(next);
+            if (disposed) return;
+            setStatus(next);
+            if (next.state === 'inside' && previousState.current !== 'inside') {
+              enteredZone();
+            }
+            previousState.current = next.state;
           }),
           arZone.addListener('trackingStatus', (next) => {
             if (!disposed) setTracking(next);
@@ -69,6 +161,13 @@ function ZoneOverlay() {
             if (!disposed) setError(message);
           }),
         ]);
+
+        const saved = await arZone.getShortcut();
+        if (!disposed) {
+          setShortcut(saved.name);
+          shortcutRef.current = saved.name;
+          setShortcutsAvailable(saved.available);
+        }
 
         await arZone.startSession({
           width: ZONE_CM.width / CM_PER_M,
@@ -96,6 +195,7 @@ function ZoneOverlay() {
     setError(null);
     try {
       await arZone.placeZone();
+      previousState.current = null;
       setPhase('tracking');
     } catch (cause) {
       setError(
@@ -108,12 +208,31 @@ function ZoneOverlay() {
 
   const replace = async () => {
     setStatus(null);
+    previousState.current = null;
     setPhase('placing');
     try {
       await arZone.previewZone();
     } catch {
       setError('Impossibile tornare in anteprima.');
     }
+  };
+
+  const saveShortcut = async (name: string) => {
+    try {
+      await arZone.setShortcut({ name });
+      setShortcut(name);
+      shortcutRef.current = name;
+      setAskShortcut(false);
+      setSettingsOpen(false);
+    } catch {
+      setError('Impossibile salvare il comando rapido.');
+    }
+  };
+
+  const testShortcut = (name: string) => {
+    void arZone.runShortcut({ name }).catch(() => {
+      setError('Comando rapido non trovato.');
+    });
   };
 
   if (!nativeRuntime) {
@@ -129,44 +248,118 @@ function ZoneOverlay() {
   const ready = scanReady(tracking);
 
   return (
-    <div className="zone-overlay">
-      {error ? <p className="zone-error">{error}</p> : null}
+    <>
+      <button
+        type="button"
+        className="zone-settings-button"
+        onClick={() => setSettingsOpen(true)}
+        aria-label="Impostazioni"
+        data-testid="button-settings"
+      >
+        &#9881;
+      </button>
 
-      {phase === 'tracking' ? (
-        <div className="zone-readout">
-          <div className="zone-track" role="presentation">
-            <div className="zone-fill" style={{ width: `${percent}%` }} />
-            <div className="zone-knob" style={{ left: `${percent}%` }} />
+      <div className="zone-overlay">
+        {error ? <p className="zone-error">{error}</p> : null}
+
+        {phase === 'tracking' ? (
+          <div className="zone-readout">
+            <div className="zone-track" role="presentation">
+              <div className="zone-fill" style={{ width: `${percent}%` }} />
+              <div className="zone-knob" style={{ left: `${percent}%` }} />
+            </div>
+            <div className="zone-labels">
+              {STATES.map((item) => (
+                <span key={item.key} className={item.key === state ? 'is-active' : undefined}>
+                  {item.label}
+                </span>
+              ))}
+            </div>
+            <button type="button" className="zone-secondary" onClick={replace}>
+              Riposiziona
+            </button>
+            <p className="zone-tip">Doppio tap sul box per le misure dei lati</p>
           </div>
-          <div className="zone-labels">
-            {STATES.map((item) => (
-              <span key={item.key} className={item.key === state ? 'is-active' : undefined}>
-                {item.label}
-              </span>
-            ))}
+        ) : (
+          <>
+            <p className="zone-scan">
+              {ready ? 'Anteprima agganciata - conferma quando ti piace' : scanHint(tracking)}
+            </p>
+            <button
+              type="button"
+              className="zone-primary"
+              onClick={place}
+              disabled={!ready}
+              data-testid="button-place-zone"
+            >
+              Posiziona zona
+            </button>
+          </>
+        )}
+      </div>
+
+      {askShortcut ? (
+        <ShortcutPanel
+          title="Quale comando rapido?"
+          initialName={shortcut}
+          onSave={saveShortcut}
+          onClose={() => setAskShortcut(false)}
+        />
+      ) : null}
+
+      {settingsOpen ? (
+        <div className="zone-sheet-backdrop" role="dialog" aria-modal="true">
+          <div className="zone-sheet">
+            <h2>Impostazioni</h2>
+            <dl className="zone-settings-list">
+              <div>
+                <dt>Dimensioni zona</dt>
+                <dd>
+                  {ZONE_CM.width} &times; {ZONE_CM.depth} &times; {ZONE_CM.height} cm
+                </dd>
+              </div>
+              <div>
+                <dt>Comando rapido all&rsquo;ingresso</dt>
+                <dd>{shortcut || 'Nessuno'}</dd>
+              </div>
+              <div>
+                <dt>App Comandi Rapidi</dt>
+                <dd>{shortcutsAvailable ? 'Disponibile' : 'Non raggiungibile'}</dd>
+              </div>
+            </dl>
+            <div className="zone-sheet-actions">
+              <button
+                type="button"
+                className="zone-secondary"
+                onClick={() => setSettingsOpen(false)}
+              >
+                Chiudi
+              </button>
+              {shortcut ? (
+                <button
+                  type="button"
+                  className="zone-secondary"
+                  onClick={() => testShortcut(shortcut)}
+                >
+                  Prova
+                </button>
+              ) : null}
+              <button
+                type="button"
+                className="zone-primary compact"
+                onClick={() => {
+                  setSettingsOpen(false);
+                  setAskShortcut(true);
+                }}
+                data-testid="button-change-shortcut"
+              >
+                {shortcut ? 'Cambia' : 'Scegli'}
+              </button>
+            </div>
           </div>
-          <button type="button" className="zone-secondary" onClick={replace}>
-            Riposiziona
-          </button>
-          <p className="zone-tip">Doppio tap sul box per le misure dei lati</p>
         </div>
-      ) : (
-        <>
-          <p className="zone-scan">
-            {ready ? 'Anteprima agganciata - conferma quando ti piace' : scanHint(tracking)}
-          </p>
-          <button
-            type="button"
-            className="zone-primary"
-            onClick={place}
-            disabled={!ready}
-            data-testid="button-place-zone"
-          >
-            Posiziona zona
-          </button>
-        </>
-      )}
-    </div>
+      ) : null}
+    </>
   );
 }
 

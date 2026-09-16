@@ -808,3 +808,105 @@ body,
   letter-spacing: .03em;
   text-align: center;
 }
+
+/* --- Impostazioni e scelta del comando rapido --- */
+.zone-settings-button {
+  position: fixed;
+  top: calc(12px + env(safe-area-inset-top));
+  right: 14px;
+  width: 40px;
+  height: 40px;
+  border: 0;
+  border-radius: 50%;
+  background: rgba(8, 20, 34, .6);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  color: #eaf4ff;
+  font-size: 19px;
+  line-height: 1;
+}
+
+.zone-sheet-backdrop {
+  position: fixed;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 20px;
+  background: rgba(3, 10, 20, .62);
+}
+
+.zone-sheet {
+  width: 100%;
+  max-width: 400px;
+  padding: 20px;
+  border-radius: 20px;
+  background: rgba(10, 24, 40, .96);
+  color: #eaf4ff;
+}
+
+.zone-sheet h2 {
+  margin: 0 0 8px;
+  font-size: 17px;
+}
+
+.zone-sheet-copy {
+  margin: 0 0 14px;
+  color: rgba(214, 236, 255, .66);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.zone-input {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 12px 14px;
+  border: 1px solid rgba(255, 255, 255, .18);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, .07);
+  color: #fff;
+  font: inherit;
+  font-size: 15px;
+}
+
+.zone-sheet-actions {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 8px;
+  margin-top: 16px;
+}
+
+.zone-primary.compact {
+  padding: 11px 20px;
+  font-size: 14px;
+}
+
+.zone-primary:disabled,
+.zone-secondary:disabled {
+  opacity: .45;
+}
+
+.zone-settings-list {
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.zone-settings-list > div {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.zone-settings-list dt {
+  color: rgba(214, 236, 255, .6);
+  font-size: 12px;
+}
+
+.zone-settings-list dd {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+  text-align: right;
+}
