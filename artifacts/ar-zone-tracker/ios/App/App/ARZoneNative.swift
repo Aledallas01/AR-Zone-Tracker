@@ -259,3 +259,11 @@ public class ARZoneNative: CAPPlugin, CAPBridgedPlugin, ARSessionDelegate {
         max(0, min(center + half, upper) - max(center - half, lower))
     }
 }
+/// Bridge view controller che registra il plugin nel momento corretto del ciclo
+/// di vita: `bridge` non esiste ancora quando il controller viene costruito,
+/// esiste solo da `capacitorDidLoad()` in poi.
+public class ARZoneBridgeViewController: CAPBridgeViewController {
+    override public func capacitorDidLoad() {
+        bridge?.registerPluginInstance(ARZoneNative())
+    }
+}
