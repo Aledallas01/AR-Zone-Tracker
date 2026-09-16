@@ -660,3 +660,11 @@ h1 em { color: var(--signal-deep); font-style: normal; }
   .live-monitor { min-height: 420px; }.live-monitor-content { min-height: 365px; }.live-monitor-content strong { font-size: 17px; }
   .measurement-strip { grid-template-columns: 1fr 1fr; }.measure-note { grid-column: 1 / -1; padding-top: 12px; padding-left: 0; border-top: 1px solid var(--line); border-left: 0; }
 }
+
+/* La preview ARKit sta dietro la webview: body e #root devono restare
+   trasparenti, altrimenti il bg-background del @layer base copre la
+   fotocamera. Regole non dentro un @layer, così vincono sul layer base. */
+body,
+#root {
+  background: transparent;
+}

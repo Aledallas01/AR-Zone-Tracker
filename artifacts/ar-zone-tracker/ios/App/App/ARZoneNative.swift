@@ -18,6 +18,10 @@ public class ARZoneNative: CAPPlugin, CAPBridgedPlugin, ARSessionDelegate {
     private let arSession = ARSession()
     private var arView: ARSCNView?
     private var zoneNode: SCNNode?
+    private var zoneFillMaterial: SCNMaterial?
+    private var zoneEdgeMaterial: SCNMaterial?
+    private var zoneFloorMaterial: SCNMaterial?
+    private var currentZoneState = ""
     private var zoneTransform = matrix_identity_float4x4
     private var zoneIsPlaced = false
     private var horizontalPlaneDetected = false
@@ -135,6 +139,10 @@ public class ARZoneNative: CAPPlugin, CAPBridgedPlugin, ARSessionDelegate {
         horizontalPlaneDetected = false
         zoneNode?.removeFromParentNode()
         zoneNode = nil
+        zoneFillMaterial = nil
+        zoneEdgeMaterial = nil
+        zoneFloorMaterial = nil
+        currentZoneState = ""
         arSession.pause()
         arView?.removeFromSuperview()
         arView = nil
@@ -161,6 +169,29 @@ public class ARZoneNative: CAPPlugin, CAPBridgedPlugin, ARSessionDelegate {
         return true
     }
 
+    /// Colori per stato: verde = dentro, ambra = parzialmente dentro,
+    /// arancio = fuori. Servono a capire a colpo d'occhio dove sei.
+    private func zoneColor(for state: String) -> UIColor {
+        switch state {
+        case "inside":
+            return UIColor(red: 0.24, green: 0.84, blue: 0.53, alpha: 1)
+        case "partial":
+            return UIColor(red: 0.94, green: 0.71, blue: 0.31, alpha: 1)
+        default:
+            return UIColor(red: 0.93, green: 0.55, blue: 0.33, alpha: 1)
+        }
+    }
+
+    private func applyZoneAppearance(for state: String) {
+        let color = zoneColor(for: state)
+        zoneFillMaterial?.diffuse.contents = color.withAlphaComponent(0.20)
+        zoneFillMaterial?.emission.contents = color.withAlphaComponent(0.16)
+        zoneEdgeMaterial?.diffuse.contents = color.withAlphaComponent(0.95)
+        zoneEdgeMaterial?.emission.contents = color.withAlphaComponent(0.85)
+        zoneFloorMaterial?.diffuse.contents = color.withAlphaComponent(0.32)
+        zoneFloorMaterial?.emission.contents = color.withAlphaComponent(0.22)
+    }
+
     private func renderZoneVolume() {
         guard let scene = arView?.scene else { return }
 
@@ -169,24 +200,59 @@ public class ARZoneNative: CAPPlugin, CAPBridgedPlugin, ARSessionDelegate {
         let container = SCNNode()
         container.simdTransform = zoneTransform
 
-        let volume = SCNBox(
-            width: CGFloat(zoneWidth),
-            height: CGFloat(zoneHeight),
-            length: CGFloat(zoneDepth),
-            chamferRadius: 0
-        )
-        let material = SCNMaterial()
-        material.diffuse.contents = UIColor.systemGreen.withAlphaComponent(0.18)
-        material.emission.contents = UIColor.systemGreen.withAlphaComponent(0.12)
-        material.isDoubleSided = true
-        material.fillMode = .lines
-        volume.materials = [material]
+        let width = CGFloat(zoneWidth)
+        let height = CGFloat(zoneHeight)
+        let depth = CGFloat(zoneDepth)
+        let centerY = zoneHeight / 2
 
-        let volumeNode = SCNNode(geometry: volume)
-        volumeNode.position = SCNVector3(0, zoneHeight / 2, 0)
-        container.addChildNode(volumeNode)
+        // Volume pieno traslucido. writesToDepthBuffer = false evita che le
+        // facce del box si occludano tra loro e nascondano il contenuto.
+        let fillMaterial = SCNMaterial()
+        fillMaterial.lightingModel = .constant
+        fillMaterial.isDoubleSided = true
+        fillMaterial.writesToDepthBuffer = false
+        fillMaterial.blendMode = .alpha
+        let fillBox = SCNBox(width: width, height: height, length: depth, chamferRadius: 0)
+        fillBox.materials = [fillMaterial]
+        let fillNode = SCNNode(geometry: fillBox)
+        fillNode.position = SCNVector3(0, centerY, 0)
+        fillNode.renderingOrder = 10
+
+        // Spigoli pieni: danno la forma anche guardando il volume da dentro.
+        let edgeMaterial = SCNMaterial()
+        edgeMaterial.lightingModel = .constant
+        edgeMaterial.isDoubleSided = true
+        edgeMaterial.writesToDepthBuffer = false
+        edgeMaterial.fillMode = .lines
+        let edgeBox = SCNBox(width: width, height: height, length: depth, chamferRadius: 0)
+        edgeBox.materials = [edgeMaterial]
+        let edgeNode = SCNNode(geometry: edgeBox)
+        edgeNode.position = SCNVector3(0, centerY, 0)
+        edgeNode.renderingOrder = 11
+
+        // Impronta a terra: ancora visivamente il volume al pavimento.
+        let floorMaterial = SCNMaterial()
+        floorMaterial.lightingModel = .constant
+        floorMaterial.isDoubleSided = true
+        floorMaterial.writesToDepthBuffer = false
+        let floorPlane = SCNPlane(width: width, height: depth)
+        floorPlane.materials = [floorMaterial]
+        let floorNode = SCNNode(geometry: floorPlane)
+        floorNode.eulerAngles = SCNVector3(-Float.pi / 2, 0, 0)
+        floorNode.position = SCNVector3(0, 0.02, 0)
+        floorNode.renderingOrder = 9
+
+        container.addChildNode(floorNode)
+        container.addChildNode(fillNode)
+        container.addChildNode(edgeNode)
         scene.rootNode.addChildNode(container)
+
+        zoneFillMaterial = fillMaterial
+        zoneEdgeMaterial = edgeMaterial
+        zoneFloorMaterial = floorMaterial
         zoneNode = container
+        currentZoneState = ""
+        applyZoneAppearance(for: "outside")
     }
 
     public func session(_ session: ARSession, didAdd anchors: [ARAnchor]) {
@@ -232,6 +298,13 @@ public class ARZoneNative: CAPPlugin, CAPBridgedPlugin, ARSessionDelegate {
         let overlapVolume = xOverlap * yOverlap * zOverlap
         let percent = min(100, max(0, (overlapVolume / phoneVolume) * 100))
         let state: String = percent <= 0 ? "outside" : (percent >= 98 ? "inside" : "partial")
+
+        if state != currentZoneState {
+            currentZoneState = state
+            DispatchQueue.main.async { [weak self] in
+                self?.applyZoneAppearance(for: state)
+            }
+        }
 
         let payload: [String: Any] = [
             "state": state,
