@@ -2,19 +2,19 @@ import { Capacitor, registerPlugin } from '@capacitor/core';
 
 export type ZoneState = 'outside' | 'partial' | 'inside';
 
+export type MappingStatus = 'notAvailable' | 'limited' | 'extending' | 'mapped';
+
+/** Stato di una singola zona. Arriva solo quando qualcosa cambia: un evento per
+ *  frame per zona saturerebbe il ponte con il nativo. */
 export type ZoneStatus = {
+  id: string;
   state: ZoneState;
   percent: number;
-  position: {
-    x: number;
-    y: number;
-    z: number;
-  };
-  trackingQuality: 'notAvailable' | 'limited' | 'normal';
-  lidarAvailable: boolean;
 };
 
-export type MappingStatus = 'notAvailable' | 'limited' | 'extending' | 'mapped';
+export type ZoneEvent = {
+  id: string;
+};
 
 export type TrackingStatus = {
   trackingQuality: 'notAvailable' | 'limited' | 'normal';
@@ -24,15 +24,12 @@ export type TrackingStatus = {
   mappingStatus: MappingStatus;
   /** Numero di blocchi di mesh LiDAR ricostruiti finora. */
   meshAnchors: number;
-  /** true quando l'anteprima sta agganciando una superficie: solo allora il
-   *  posizionamento ha senso, perche conferma esattamente cio che si vede. */
+  /** true quando l'anteprima sta agganciando una superficie. */
   previewReady: boolean;
   /** ARKit sta cercando di riconoscere l'ambiente della mappa salvata. */
   relocalizing: boolean;
-  /** true quando una zona e attiva, anche se ripristinata da una mappa. */
-  zonePlaced: boolean;
-  /** Esiste una mappa salvata su disco. */
-  hasSavedZone: boolean;
+  zoneCount: number;
+  hasSavedZones: boolean;
 };
 
 export type ZoneError = {
@@ -41,25 +38,30 @@ export type ZoneError = {
 
 export type ARZoneNativePlugin = {
   isSupported(): Promise<{ supported: boolean; lidarAvailable: boolean }>;
-  /** Dimensioni in METRI: è l'unità di ARKit. La UI lavora in centimetri
-   *  e converte qui al confine (vedi ZONE_CM in App.tsx). */
-  startSession(options: {
+  startSession(): Promise<{
+    started: boolean;
+    lidarAvailable: boolean;
+    restoringSavedZones: boolean;
+  }>;
+  /** Entra in modalita aggiunta: il box segue il centro dello schermo.
+   *  Le misure sono in METRI, l'unita di ARKit. */
+  previewZone(options: {
+    color: string;
     width: number;
-    depth: number;
     height: number;
-  }): Promise<{ started: boolean; lidarAvailable: boolean; restoringSavedZone: boolean }>;
-  /** Conferma la posizione mostrata dall'anteprima. */
-  placeZone(): Promise<{ placed: boolean }>;
-  /** Rimuove la zona e torna all'anteprima, senza fermare la sessione. */
-  previewZone(): Promise<{ preview: boolean }>;
-  /** Comando rapido salvato sul dispositivo (UserDefaults, non localStorage). */
-  getShortcut(): Promise<{ name: string; configured: boolean; available: boolean }>;
-  setShortcut(options: { name: string }): Promise<{ name: string; configured: boolean }>;
-  /** Apre Comandi Rapidi ed esegue lo shortcut indicato, o quello salvato. */
-  runShortcut(options?: { name?: string }): Promise<{ launched: boolean; name: string }>;
-  /** Dimentica la mappa salvata: necessario quando si cambia stanza. */
-  clearSavedZone(): Promise<{ cleared: boolean }>;
+    depth: number;
+  }): Promise<{ preview: boolean }>;
+  cancelPreview(): Promise<{ preview: boolean }>;
+  /** Conferma la posizione mostrata dall'anteprima per la zona indicata. */
+  placeZone(options: { id: string; color: string }): Promise<{ placed: boolean; id: string }>;
+  removeZone(options: { id: string }): Promise<{ removed: boolean; id: string }>;
   resetSession(): Promise<void>;
+  /** Configurazione dell'interfaccia (JSON), salvata in UserDefaults. */
+  getConfig(): Promise<{ config: string; shortcutsAvailable: boolean }>;
+  setConfig(options: { config: string }): Promise<{ saved: boolean }>;
+  runShortcut(options: { name: string }): Promise<{ launched: boolean; name: string }>;
+  /** Dimentica mappa e zone salvate: necessario quando si cambia stanza. */
+  clearSavedZones(): Promise<{ cleared: boolean }>;
   addListener(
     eventName: 'zoneStatus',
     listenerFunc: (status: ZoneStatus) => void,
@@ -67,6 +69,10 @@ export type ARZoneNativePlugin = {
   addListener(
     eventName: 'trackingStatus',
     listenerFunc: (status: TrackingStatus) => void,
+  ): Promise<{ remove: () => Promise<void> }>;
+  addListener(
+    eventName: 'zoneEnter' | 'zoneExit',
+    listenerFunc: (event: ZoneEvent) => void,
   ): Promise<{ remove: () => Promise<void> }>;
   addListener(
     eventName: 'zoneError',

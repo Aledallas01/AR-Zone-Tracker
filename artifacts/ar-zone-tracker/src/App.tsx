@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   arZone,
   isNativeRuntime,
@@ -7,21 +7,55 @@ import {
   type ZoneStatus,
 } from '@/native/arZone';
 
-/** Misure della zona in centimetri: unica fonte di verita per UI e plugin.
- *  ARKit ragiona in metri, quindi la conversione avviene solo al confine nativo. */
-const ZONE_CM = { width: 20, depth: 10, height: 5 } as const;
+/** Misure predefinite in centimetri. ARKit ragiona in metri, quindi la
+ *  conversione avviene solo al confine nativo. */
+const DEFAULT_SIZE_CM = { width: 20, depth: 10, height: 5 } as const;
 const CM_PER_M = 100;
 
-type Phase = 'starting' | 'placing' | 'tracking';
+const PALETTE = [
+  { hex: '#175394', label: 'Blu' },
+  { hex: '#1E7A5F', label: 'Verde' },
+  { hex: '#9A3B1F', label: 'Rosso' },
+  { hex: '#7A3E9C', label: 'Viola' },
+  { hex: '#B07A12', label: 'Ambra' },
+  { hex: '#256E7E', label: 'Ciano' },
+] as const;
 
-const STATES: ReadonlyArray<{ key: ZoneState; label: string }> = [
-  { key: 'outside', label: 'Fuori' },
-  { key: 'partial', label: 'Parzialmente dentro' },
-  { key: 'inside', label: 'Completamente dentro' },
-];
+const STATE_LABEL: Record<ZoneState, string> = {
+  outside: 'Fuori',
+  partial: 'Parzialmente dentro',
+  inside: 'Completamente dentro',
+};
 
-/** La zona resta ferma solo se ARKit ha gia mappato abbastanza ambiente:
- *  piazzarla prima e la causa principale della deriva. */
+const STATE_ORDER: ReadonlyArray<ZoneState> = ['outside', 'partial', 'inside'];
+
+type ZoneConfig = {
+  id: string;
+  name: string;
+  color: string;
+  /** Misure in centimetri: e l'unita con cui si ragiona nell'interfaccia. */
+  width: number;
+  depth: number;
+  height: number;
+  shortcutEnter: string;
+  shortcutExit: string;
+};
+
+type StoredConfig = { zones: ZoneConfig[] };
+
+function newZone(index: number): ZoneConfig {
+  return {
+    id: `z${Date.now().toString(36)}`,
+    name: `Zona ${index + 1}`,
+    color: PALETTE[index % PALETTE.length].hex,
+    width: DEFAULT_SIZE_CM.width,
+    depth: DEFAULT_SIZE_CM.depth,
+    height: DEFAULT_SIZE_CM.height,
+    shortcutEnter: '',
+    shortcutExit: '',
+  };
+}
+
 function scanReady(tracking: TrackingStatus | null): boolean {
   if (!tracking) return false;
   if (tracking.trackingQuality !== 'normal') return false;
@@ -31,65 +65,101 @@ function scanReady(tracking: TrackingStatus | null): boolean {
 
 function scanHint(tracking: TrackingStatus | null): string {
   if (!tracking) return 'Avvio fotocamera...';
-  if (tracking.relocalizing) {
-    return 'Cerco la zona salvata: inquadra la stessa area';
-  }
-  if (tracking.trackingQuality !== 'normal') {
-    return 'Muovi lentamente il telefono';
-  }
+  if (tracking.relocalizing) return 'Cerco le zone salvate: inquadra la stessa area';
+  if (tracking.trackingQuality !== 'normal') return 'Muovi lentamente il telefono';
   if (tracking.lidarAvailable && tracking.meshAnchors > 0) {
     return `Scansione LiDAR: ${tracking.meshAnchors} blocchi`;
   }
-  if (!tracking.previewReady) {
-    return 'Inquadra il pavimento al centro';
-  }
+  if (!tracking.previewReady) return 'Inquadra il pavimento al centro';
   return 'Scansione ambiente...';
 }
 
-/** Pannello per scegliere il comando rapido. iOS non espone l'elenco degli
- *  shortcut dell'utente, quindi la scelta avviene per nome esatto. */
-function ShortcutPanel({
-  title,
-  initialName,
+/** Editor di una zona: nome, colore e i due comandi rapidi. iOS non espone
+ *  l'elenco degli shortcut, quindi la scelta avviene per nome esatto. */
+function ZoneEditor({
+  zone,
   onSave,
+  onDelete,
   onClose,
   onTest,
 }: {
-  title: string;
-  initialName: string;
-  onSave: (name: string) => void;
+  zone: ZoneConfig;
+  onSave: (zone: ZoneConfig) => void;
+  onDelete: (id: string) => void;
   onClose: () => void;
-  onTest?: (name: string) => void;
+  onTest: (name: string) => void;
 }) {
-  const [name, setName] = useState(initialName);
+  const [draft, setDraft] = useState(zone);
 
   return (
     <div className="zone-sheet-backdrop" role="dialog" aria-modal="true">
       <div className="zone-sheet">
-        <h2>{title}</h2>
-        <p className="zone-sheet-copy">
-          Scrivi il nome esatto del comando rapido, come compare nell&rsquo;app Comandi Rapidi.
-        </p>
-        <input
-          className="zone-input"
-          type="text"
-          value={name}
-          placeholder="Nome del comando rapido"
-          autoCapitalize="none"
-          autoCorrect="off"
-          onChange={(event) => setName(event.target.value)}
-          data-testid="input-shortcut-name"
-        />
+        <h2>{zone.name}</h2>
+
+        <label className="zone-field">
+          <span>Nome</span>
+          <input
+            className="zone-input"
+            type="text"
+            value={draft.name}
+            onChange={(event) => setDraft({ ...draft, name: event.target.value })}
+            data-testid="input-zone-name"
+          />
+        </label>
+
+        <div className="zone-field">
+          <span>Colore</span>
+          <div className="zone-swatches">
+            {PALETTE.map((entry) => (
+              <button
+                key={entry.hex}
+                type="button"
+                className={draft.color === entry.hex ? 'zone-swatch is-active' : 'zone-swatch'}
+                style={{ background: entry.hex }}
+                aria-label={entry.label}
+                onClick={() => setDraft({ ...draft, color: entry.hex })}
+              />
+            ))}
+          </div>
+        </div>
+
+        <label className="zone-field">
+          <span>Comando rapido all&rsquo;ingresso</span>
+          <input
+            className="zone-input"
+            type="text"
+            value={draft.shortcutEnter}
+            placeholder="Nome esatto del comando"
+            autoCapitalize="none"
+            autoCorrect="off"
+            onChange={(event) => setDraft({ ...draft, shortcutEnter: event.target.value })}
+            data-testid="input-shortcut-enter"
+          />
+        </label>
+
+        <label className="zone-field">
+          <span>Comando rapido all&rsquo;uscita</span>
+          <input
+            className="zone-input"
+            type="text"
+            value={draft.shortcutExit}
+            placeholder="Opzionale"
+            autoCapitalize="none"
+            autoCorrect="off"
+            onChange={(event) => setDraft({ ...draft, shortcutExit: event.target.value })}
+            data-testid="input-shortcut-exit"
+          />
+        </label>
+
         <div className="zone-sheet-actions">
           <button type="button" className="zone-secondary" onClick={onClose}>
             Annulla
           </button>
-          {onTest ? (
+          {draft.shortcutEnter.trim() ? (
             <button
               type="button"
               className="zone-secondary"
-              onClick={() => onTest(name.trim())}
-              disabled={!name.trim()}
+              onClick={() => onTest(draft.shortcutEnter.trim())}
             >
               Prova
             </button>
@@ -97,13 +167,16 @@ function ShortcutPanel({
           <button
             type="button"
             className="zone-primary compact"
-            onClick={() => onSave(name.trim())}
-            disabled={!name.trim()}
-            data-testid="button-save-shortcut"
+            onClick={() => onSave({ ...draft, name: draft.name.trim() || zone.name })}
+            data-testid="button-save-zone"
           >
             Salva
           </button>
         </div>
+
+        <button type="button" className="zone-danger" onClick={() => onDelete(zone.id)}>
+          Elimina zona
+        </button>
       </div>
     </div>
   );
@@ -111,23 +184,32 @@ function ShortcutPanel({
 
 function ZoneOverlay() {
   const nativeRuntime = isNativeRuntime();
-  const [phase, setPhase] = useState<Phase>('starting');
-  const [status, setStatus] = useState<ZoneStatus | null>(null);
+  const [zones, setZones] = useState<ZoneConfig[]>([]);
+  const [statuses, setStatuses] = useState<Record<string, ZoneStatus>>({});
   const [tracking, setTracking] = useState<TrackingStatus | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [shortcut, setShortcut] = useState('');
   const [shortcutsAvailable, setShortcutsAvailable] = useState(true);
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [askShortcut, setAskShortcut] = useState(false);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [placingId, setPlacingId] = useState<string | null>(null);
 
-  // Il listener nativo viene registrato una volta sola: con lo state leggerebbe
-  // per sempre il valore iniziale, quindi serve un ref.
-  const shortcutRef = useRef('');
-  const previousState = useRef<ZoneState | null>(null);
+  // I listener nativi si registrano una volta sola: con lo state leggerebbero
+  // per sempre il valore iniziale, quindi la lista passa da un ref.
+  const zonesRef = useRef<ZoneConfig[]>([]);
 
   useEffect(() => {
-    shortcutRef.current = shortcut;
-  }, [shortcut]);
+    zonesRef.current = zones;
+  }, [zones]);
+
+  const persist = async (next: ZoneConfig[]) => {
+    setZones(next);
+    zonesRef.current = next;
+    try {
+      await arZone.setConfig({ config: JSON.stringify({ zones: next }) });
+    } catch {
+      setError('Impossibile salvare la configurazione.');
+    }
+  };
 
   useEffect(() => {
     if (!nativeRuntime) return;
@@ -135,14 +217,18 @@ function ZoneOverlay() {
     let disposed = false;
     let subscriptions: Array<{ remove: () => Promise<void> }> = [];
 
-    const enteredZone = () => {
-      const name = shortcutRef.current;
+    const runFor = (id: string, pick: (zone: ZoneConfig) => string) => {
+      const zone = zonesRef.current.find((entry) => entry.id === id);
+      if (!zone) return;
+      const name = pick(zone).trim();
       if (!name) {
-        setAskShortcut(true);
+        // Nessun comando ancora scelto per questa zona: si chiede al momento
+        // del primo ingresso, come per la configurazione iniziale.
+        if (pick === pickEnter) setEditingId(id);
         return;
       }
       void arZone.runShortcut({ name }).catch(() => {
-        setError('Comando rapido non trovato. Controlla il nome nelle impostazioni.');
+        setError(`Comando rapido "${name}" non trovato.`);
       });
     };
 
@@ -150,40 +236,38 @@ function ZoneOverlay() {
       try {
         subscriptions = await Promise.all([
           arZone.addListener('zoneStatus', (next) => {
-            if (disposed) return;
-            setStatus(next);
-            if (next.state === 'inside' && previousState.current !== 'inside') {
-              enteredZone();
-            }
-            previousState.current = next.state;
+            if (!disposed) setStatuses((current) => ({ ...current, [next.id]: next }));
           }),
           arZone.addListener('trackingStatus', (next) => {
-            if (disposed) return;
-            setTracking(next);
-            // Una zona ripristinata dalla mappa salvata e gia attiva: si entra
-            // direttamente in tracking senza passare dall'anteprima.
-            if (next.zonePlaced) {
-              setPhase((current) => (current === 'tracking' ? current : 'tracking'));
-            }
+            if (!disposed) setTracking(next);
+          }),
+          arZone.addListener('zoneEnter', ({ id }) => {
+            if (!disposed) runFor(id, pickEnter);
+          }),
+          arZone.addListener('zoneExit', ({ id }) => {
+            if (!disposed) runFor(id, pickExit);
           }),
           arZone.addListener('zoneError', ({ message }) => {
             if (!disposed) setError(message);
           }),
         ]);
 
-        const saved = await arZone.getShortcut();
+        const saved = await arZone.getConfig();
         if (!disposed) {
-          setShortcut(saved.name);
-          shortcutRef.current = saved.name;
-          setShortcutsAvailable(saved.available);
+          setShortcutsAvailable(saved.shortcutsAvailable);
+          if (saved.config) {
+            try {
+              const parsed = JSON.parse(saved.config) as StoredConfig;
+              const list = Array.isArray(parsed.zones) ? parsed.zones : [];
+              setZones(list);
+              zonesRef.current = list;
+            } catch {
+              setError('Configurazione salvata illeggibile: ricomincio da zero.');
+            }
+          }
         }
 
-        await arZone.startSession({
-          width: ZONE_CM.width / CM_PER_M,
-          depth: ZONE_CM.depth / CM_PER_M,
-          height: ZONE_CM.height / CM_PER_M,
-        });
-        if (!disposed) setPhase('placing');
+        await arZone.startSession();
       } catch (cause) {
         if (!disposed) {
           setError(cause instanceof Error ? cause.message : 'Impossibile avviare ARKit.');
@@ -200,62 +284,99 @@ function ZoneOverlay() {
     };
   }, [nativeRuntime]);
 
-  const place = async () => {
+  const addZone = async () => {
+    const zone = newZone(zonesRef.current.length);
+    await persist([...zonesRef.current, zone]);
+    setSettingsOpen(false);
+    await startPlacing(zone);
+  };
+
+  const startPlacing = async (zone: ZoneConfig) => {
+    setPlacingId(zone.id);
+    try {
+      await arZone.previewZone({
+        color: zone.color,
+        width: zone.width / CM_PER_M,
+        depth: zone.depth / CM_PER_M,
+        height: zone.height / CM_PER_M,
+      });
+    } catch {
+      setError('Impossibile avviare l’anteprima.');
+    }
+  };
+
+  const confirmPlacement = async () => {
+    const zone = zonesRef.current.find((entry) => entry.id === placingId);
+    if (!zone) return;
     setError(null);
     try {
-      await arZone.placeZone();
-      previousState.current = null;
-      setPhase('tracking');
+      await arZone.placeZone({ id: zone.id, color: zone.color });
+      setPlacingId(null);
     } catch (cause) {
       setError(
-        cause instanceof Error
-          ? cause.message
-          : 'Punta la fotocamera verso una superficie orizzontale.',
+        cause instanceof Error ? cause.message : 'Punta la fotocamera verso una superficie.',
       );
     }
   };
 
-  const replace = async () => {
-    setStatus(null);
-    previousState.current = null;
-    setPhase('placing');
+  const cancelPlacement = async () => {
+    setPlacingId(null);
     try {
-      await arZone.previewZone();
+      await arZone.cancelPreview();
     } catch {
-      setError('Impossibile tornare in anteprima.');
+      /* l'anteprima sparisce comunque al prossimo frame */
     }
   };
 
-  const saveShortcut = async (name: string) => {
+  const saveZone = async (updated: ZoneConfig) => {
+    const next = zonesRef.current.map((entry) => (entry.id === updated.id ? updated : entry));
+    await persist(next);
+    setEditingId(null);
+  };
+
+  const deleteZone = async (id: string) => {
+    await persist(zonesRef.current.filter((entry) => entry.id !== id));
+    setEditingId(null);
+    setStatuses((current) => {
+      const next = { ...current };
+      delete next[id];
+      return next;
+    });
     try {
-      await arZone.setShortcut({ name });
-      setShortcut(name);
-      shortcutRef.current = name;
-      setAskShortcut(false);
-      setSettingsOpen(false);
+      await arZone.removeZone({ id });
     } catch {
-      setError('Impossibile salvare il comando rapido.');
+      setError('Impossibile rimuovere la zona dalla scena.');
     }
   };
 
-  const forgetSavedZone = async () => {
+  const forgetSaved = async () => {
     try {
-      await arZone.clearSavedZone();
-      await arZone.previewZone();
-      setStatus(null);
-      previousState.current = null;
-      setPhase('placing');
+      await arZone.clearSavedZones();
+      setStatuses({});
       setSettingsOpen(false);
     } catch {
-      setError('Impossibile cancellare la zona salvata.');
+      setError('Impossibile cancellare le zone salvate.');
     }
   };
 
   const testShortcut = (name: string) => {
     void arZone.runShortcut({ name }).catch(() => {
-      setError('Comando rapido non trovato.');
+      setError(`Comando rapido "${name}" non trovato.`);
     });
   };
+
+  // Zona da mostrare nell'indicatore: quella in cui si e piu dentro.
+  const active = useMemo(() => {
+    let best: { zone: ZoneConfig; status: ZoneStatus } | null = null;
+    for (const zone of zones) {
+      const status = statuses[zone.id];
+      if (!status) continue;
+      if (!best || status.percent > best.status.percent) {
+        best = { zone, status };
+      }
+    }
+    return best;
+  }, [zones, statuses]);
 
   if (!nativeRuntime) {
     return (
@@ -265,8 +386,8 @@ function ZoneOverlay() {
     );
   }
 
-  const state: ZoneState = status?.state ?? 'outside';
-  const percent = Math.min(100, Math.max(0, status?.percent ?? 0));
+  const editing = zones.find((entry) => entry.id === editingId) ?? null;
+  const placing = zones.find((entry) => entry.id === placingId) ?? null;
   const ready = scanReady(tracking);
 
   return (
@@ -284,48 +405,81 @@ function ZoneOverlay() {
       <div className="zone-overlay">
         {error ? <p className="zone-error">{error}</p> : null}
 
-        {phase === 'tracking' ? (
+        {placing ? (
+          <>
+            <p className="zone-scan">
+              {ready ? `Conferma dove mettere ${placing.name}` : scanHint(tracking)}
+            </p>
+            <div className="zone-place-actions">
+              <button type="button" className="zone-secondary" onClick={cancelPlacement}>
+                Annulla
+              </button>
+              <button
+                type="button"
+                className="zone-primary"
+                onClick={confirmPlacement}
+                disabled={!ready}
+                data-testid="button-place-zone"
+              >
+                Posiziona
+              </button>
+            </div>
+          </>
+        ) : zones.length === 0 ? (
+          <button type="button" className="zone-primary" onClick={addZone}>
+            Crea la prima zona
+          </button>
+        ) : (
           <div className="zone-readout">
+            <div className="zone-chips">
+              {zones.map((zone) => {
+                const state = statuses[zone.id]?.state ?? 'outside';
+                return (
+                  <button
+                    key={zone.id}
+                    type="button"
+                    className={state === 'outside' ? 'zone-chip' : 'zone-chip is-live'}
+                    onClick={() => setEditingId(zone.id)}
+                  >
+                    <span className="zone-dot" style={{ background: zone.color }} />
+                    {zone.name}
+                  </button>
+                );
+              })}
+            </div>
+
             <div className="zone-track" role="presentation">
-              <div className="zone-fill" style={{ width: `${percent}%` }} />
-              <div className="zone-knob" style={{ left: `${percent}%` }} />
+              <div
+                className="zone-fill"
+                style={{
+                  width: `${active?.status.percent ?? 0}%`,
+                  background: active?.zone.color ?? '#175394',
+                }}
+              />
+              <div className="zone-knob" style={{ left: `${active?.status.percent ?? 0}%` }} />
             </div>
             <div className="zone-labels">
-              {STATES.map((item) => (
-                <span key={item.key} className={item.key === state ? 'is-active' : undefined}>
-                  {item.label}
+              {STATE_ORDER.map((key) => (
+                <span
+                  key={key}
+                  className={key === (active?.status.state ?? 'outside') ? 'is-active' : undefined}
+                >
+                  {STATE_LABEL[key]}
                 </span>
               ))}
             </div>
-            <button type="button" className="zone-secondary" onClick={replace}>
-              Riposiziona
-            </button>
-            <p className="zone-tip">Doppio tap sul box per le misure dei lati</p>
+            <p className="zone-tip">Doppio tap su un box per le misure dei lati</p>
           </div>
-        ) : (
-          <>
-            <p className="zone-scan">
-              {ready ? 'Anteprima agganciata - conferma quando ti piace' : scanHint(tracking)}
-            </p>
-            <button
-              type="button"
-              className="zone-primary"
-              onClick={place}
-              disabled={!ready}
-              data-testid="button-place-zone"
-            >
-              Posiziona zona
-            </button>
-          </>
         )}
       </div>
 
-      {askShortcut ? (
-        <ShortcutPanel
-          title="Quale comando rapido?"
-          initialName={shortcut}
-          onSave={saveShortcut}
-          onClose={() => setAskShortcut(false)}
+      {editing ? (
+        <ZoneEditor
+          zone={editing}
+          onSave={saveZone}
+          onDelete={deleteZone}
+          onClose={() => setEditingId(null)}
+          onTest={testShortcut}
         />
       ) : null}
 
@@ -333,31 +487,44 @@ function ZoneOverlay() {
         <div className="zone-sheet-backdrop" role="dialog" aria-modal="true">
           <div className="zone-sheet">
             <h2>Impostazioni</h2>
-            <dl className="zone-settings-list">
-              <div>
-                <dt>Dimensioni zona</dt>
-                <dd>
-                  {ZONE_CM.width} &times; {ZONE_CM.depth} &times; {ZONE_CM.height} cm
-                </dd>
-              </div>
-              <div>
-                <dt>Comando rapido all&rsquo;ingresso</dt>
-                <dd>{shortcut || 'Nessuno'}</dd>
-              </div>
-              <div>
-                <dt>App Comandi Rapidi</dt>
-                <dd>{shortcutsAvailable ? 'Disponibile' : 'Non raggiungibile'}</dd>
-              </div>
-              <div>
-                <dt>Zona salvata</dt>
-                <dd>{tracking?.hasSavedZone ? 'Ripristinata' : 'Nessuna'}</dd>
-              </div>
-            </dl>
-            {tracking?.hasSavedZone ? (
-              <button type="button" className="zone-danger" onClick={forgetSavedZone}>
-                Dimentica zona salvata
-              </button>
-            ) : null}
+
+            <div className="zone-settings-rows">
+              {zones.length === 0 ? <p className="zone-sheet-copy">Nessuna zona.</p> : null}
+              {zones.map((zone) => (
+                <div key={zone.id} className="zone-settings-row">
+                  <span className="zone-dot" style={{ background: zone.color }} />
+                  <div className="zone-settings-text">
+                    <strong>{zone.name}</strong>
+                    <span>{zone.shortcutEnter || 'Nessun comando'}</span>
+                  </div>
+                  <button
+                    type="button"
+                    className="zone-secondary"
+                    onClick={() => {
+                      setSettingsOpen(false);
+                      void startPlacing(zone);
+                    }}
+                  >
+                    Sposta
+                  </button>
+                  <button
+                    type="button"
+                    className="zone-secondary"
+                    onClick={() => {
+                      setSettingsOpen(false);
+                      setEditingId(zone.id);
+                    }}
+                  >
+                    Modifica
+                  </button>
+                </div>
+              ))}
+            </div>
+
+            <p className="zone-sheet-copy">
+              Comandi Rapidi: {shortcutsAvailable ? 'disponibile' : 'non raggiungibile'}
+            </p>
+
             <div className="zone-sheet-actions">
               <button
                 type="button"
@@ -366,33 +533,30 @@ function ZoneOverlay() {
               >
                 Chiudi
               </button>
-              {shortcut ? (
-                <button
-                  type="button"
-                  className="zone-secondary"
-                  onClick={() => testShortcut(shortcut)}
-                >
-                  Prova
-                </button>
-              ) : null}
               <button
                 type="button"
                 className="zone-primary compact"
-                onClick={() => {
-                  setSettingsOpen(false);
-                  setAskShortcut(true);
-                }}
-                data-testid="button-change-shortcut"
+                onClick={addZone}
+                data-testid="button-add-zone"
               >
-                {shortcut ? 'Cambia' : 'Scegli'}
+                Aggiungi zona
               </button>
             </div>
+
+            {tracking?.hasSavedZones ? (
+              <button type="button" className="zone-danger" onClick={forgetSaved}>
+                Dimentica zone salvate
+              </button>
+            ) : null}
           </div>
         </div>
       ) : null}
     </>
   );
 }
+
+const pickEnter = (zone: ZoneConfig) => zone.shortcutEnter;
+const pickExit = (zone: ZoneConfig) => zone.shortcutExit;
 
 function App() {
   return <ZoneOverlay />;
